@@ -1,0 +1,15 @@
+# dsh-token-tps-stats 的 bundle 层：插一行。
+#
+# `name` 用**裸包名**（不含 `/`）：宿主 `client-modules` 的启动图扫描会把它识别为
+# 包根 → 按包名解析 `package.json` → 命中本包 → **产生客户端 source**，
+# 且界面上显示的就是这个短名。
+#
+# 为什么不用路径写法（`./lib/client.js`）：那条分支虽然也产生 source，但界面会显示成
+# 宿主改写后的绝对 `file:` URL（长且暴露本机路径），不体面。
+#
+# 一个声明 `dsh.client` 的包**只能有一个 source**，所以这里就一行、一种写法。
+#
+# 值统一加引号：YAML 里以 `@`、`.` 或特殊字符开头的标量会被当成指示符而解析失败。
+- insert:
+    - id: token-tps-stats
+      name: "dsh-token-tps-stats"
