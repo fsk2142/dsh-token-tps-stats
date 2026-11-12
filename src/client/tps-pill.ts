@@ -211,6 +211,17 @@ export function TpsPill(props: TpsPillProps = {}): unknown {
   const useChat = props.useChat as ((selector: (snapshot: unknown) => unknown) => unknown) | undefined;
   const partial = typeof useChat === "function" ? useChat((snapshot) => (snapshot as { legacy?: { partial?: unknown } })?.legacy?.partial) : undefined;
 
+  /*
+   * 诊断：拿不到 `useChat` 就只会恒显示 0，必须在控制台留一句 ——
+   * 否则「数字一直是 0」会被当成计算问题，实际是槽位属性没送到。
+   */
+  useEffect(() => {
+    if (typeof useChat === "function") return;
+    console.debug(
+      "[dsh-token-tps-stats] tps pill: slot props have no useChat; the reading will stay 0 (session scope missing?)",
+    );
+  }, [useChat]);
+
   const [value, setValue] = useState<number>(() => readingOf(entry, Date.now()));
   const [expanded, setExpanded] = useState<boolean>(() => getChartState().open);
 
