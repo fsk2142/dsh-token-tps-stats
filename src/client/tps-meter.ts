@@ -235,6 +235,12 @@ export interface TpsMeter {
   /** 记一帧（帧里可能同时有正文与思考，调用方各推一次即可）。 */
   push(text: string, at: number): void;
   /**
+   * 记**已经数好**的一批字符（调用方自己做过差分与摊开，见 `session-store.ts`）。
+   * @param counts - CJK 与其它字符数。
+   * @param at - 这一片字符所属的时刻（毫秒）。
+   */
+  pushCounts(counts: { cjk: number; other: number }, at: number): void;
+  /**
    * 读当前速度。
    * @param at - 现在（毫秒）。
    * @returns 估算 tok/s；窗口无数据且已回落到 0 时 `undefined`。
@@ -291,6 +297,17 @@ export function createTpsMeter(
     for (const key of buckets.keys()) {
       if (key < floor) buckets.delete(key);
     }
+  };
+
+  /** 把一批字符计数记到某个毫秒桶里（两个 `push` 路径共用）。 */
+  const accumulate = (counts: { cjk: number; other: number }, at: number): void => {
+    const bucket = buckets.get(at);
+    if (bucket === undefined) buckets.set(at, counts);
+    else {
+      bucket.cjk += counts.cjk;
+      bucket.other += counts.other;
+    }
+    prune(at);
   };
 
   /**
@@ -357,13 +374,12 @@ export function createTpsMeter(
       if (text === "") return;
       const counts = countChars(text);
       if (counts.cjk === 0 && counts.other === 0) return;
-      const bucket = buckets.get(at);
-      if (bucket === undefined) buckets.set(at, counts);
-      else {
-        bucket.cjk += counts.cjk;
-        bucket.other += counts.other;
-      }
-      prune(at);
+      accumulate(counts, at);
+    },
+    pushCounts: (counts, at) => {
+      if (settled) return;
+      if (counts.cjk <= 0 && counts.other <= 0) return;
+      accumulate(counts, at);
     },
     reading: (at) => {
       prune(at);

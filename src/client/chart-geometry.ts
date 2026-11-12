@@ -1,9 +1,8 @@
 /**
- * **折线图的几何**（2026-11-12，第 3 步）。
+ * **折线图的几何**（2026-11-12，第 3 步；2026-11-13 换「50 起步的阶梯量程」）。
  *
  * 纯函数：把「每秒一个 tok/s」的序列折算成 SVG path 与坐标轴刻度。
- * 单独成文件是为了能完整单测 —— 画错的坐标轴（比如最大值取整成 47 这种数）
- * 靠肉眼看不出规律，只能靠断言钉住。
+ * 单独成文件是为了能完整单测 —— 画错的坐标轴靠肉眼看不出规律，只能靠断言钉住。
  *
  * @module dsh-token-tps-stats/src/client/chart-geometry
  */
@@ -43,41 +42,97 @@ export interface ChartGeometry {
   readonly max: number;
 }
 
-/**
- * 把最大值「向上取整」到一眼能读的数（1 / 2 / 2.5 / 5 / 10 × 10^n），再**取整**。
- *
- * 为什么不能直接用峰值当最大值：峰值 47 时纵轴顶端会标成 47，刻度只能标 0/12/23/35
- * 这种读不顺的数。取整到 50 之后，刻度就是 0/25/50。
- *
- * 为什么最后还要 `Math.round`（2026-11-13）：用户要求「按照整数变化，不要有小数」。
- * 刻度是给人看的数字，`2.5` 这种只是数学上漂亮、读起来不整齐；取整后 2.5 → 3，
- * 刻度就是 0/2/3（`axisTicks` 会去重）。
- * @param value - 峰值（tok/s）。
- * @returns 不小于 `value` 的「整齐」整数；`value <= 0` 时给一个最小量程。
- */
-export function niceMax(value: number): number {
-  if (!Number.isFinite(value) || value <= 0) return 10;
-  const exponent = Math.floor(Math.log10(value));
-  const magnitude = Math.pow(10, exponent);
-  const normalized = value / magnitude;
-  const steps = [1, 2, 2.5, 5, 10];
-  let picked = 10 * magnitude;
-  for (const step of steps) {
-    if (normalized <= step) {
-      picked = step * magnitude;
-      break;
-    }
-  }
-  // 小于 1 的量程没有意义（峰值都 >0 了，轴底至少给到 1），其余取整。
-  return Math.max(1, Math.round(picked));
+/** 纵轴量程：上限、格宽、刻度。 */
+export interface AxisScale {
+  /** 纵轴上限（`step × 段数`，恒为整数）。 */
+  readonly max: number;
+  /** 相邻刻度之间的差（恒为整数）。 */
+  readonly step: number;
+  /** 从 0 到 `max` 的刻度值（升序，含两端）。 */
+  readonly ticks: readonly number[];
 }
 
 /**
- * 造纵轴刻度（从 0 到 `max`，含两端），**只出整数**。
+ * 阶梯：量程与格宽只在这一串数里挑。
  *
- * `max / count` 不能整除时（例如 max=50、count=3）中间刻度会取整，重复值去掉 ——
- * 宁可少一条刻度线，也不要出现 `16.67` 这种读数。
- * @param max - 纵轴最大值（建议先过 {@link niceMax}）。
+ * ## 为什么不是 1/2/5 × 10^n（2026-11-13 用户反馈「峰值过高不要纵轴翻倍」）
+ *
+ * 旧算法（1 / 2 / 2.5 / 5 / 10 × 10^n）在 100~200 这一段只能给出 200：
+ * 峰值 108 → 上限 200，曲线被压在下半张图里，**看起来像翻了一倍**。
+ *
+ * 用户原话：「可以 50 递增，峰值向上取 50 的整数倍，比如 108 取纵轴上限为 150」。
+ * 所以阶梯在常用区间按 **25 / 50 / 100 / 250 / 500** 走 —— 108 落进 50 格 → 150，
+ * 刻度就是 0 / 50 / 100 / 150，既不浪费纵向空间，数字也整。
+ *
+ * 小速度仍用 1 / 2 / 5 这种细格：否则 3 tok/s 的区间会被拉到 50，
+ * 曲线贴在最底下一条直线，什么也看不出来。
+ */
+const AXIS_STEPS = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000, 25_000, 50_000] as const;
+
+/** 最多画几段（段数 = 刻度数 − 1）。 */
+const MAX_SEGMENTS = 3;
+
+/**
+ * 算纵轴量程：**上限是格宽的整数倍**，且尽量贴近峰值。
+ *
+ * 选格规则：在 {@link AXIS_STEPS} 里挑**能放下峰值的最小格宽**，再要求 `ceil(峰值/格宽)`
+ * 不超过 {@link MAX_SEGMENTS} 段（段数太多刻度会挤）。于是：
+ *
+ * | 峰值 | 格宽 | 上限 | 刻度 |
+ * | --- | --- | --- | --- |
+ * | 108 | 50 | 150 | 0 / 50 / 100 / 150 |
+ * | 29 | 10 | 30 | 0 / 10 / 20 / 30 |
+ * | 3.4 | 2 | 4 | 0 / 2 / 4 |
+ * | 2 000 | 1 000 | 2 000 | 0 / 1 000 / 2 000 |
+ *
+ * @param peak - 序列峰值（tok/s）。
+ * @param maxSegments - 最多段数，缺省 {@link MAX_SEGMENTS}。
+ * @returns 上限 / 格宽 / 刻度；峰值无效时给最小量程（0/1/2）。
+ */
+export function axisScale(peak: number, maxSegments: number = MAX_SEGMENTS): AxisScale {
+  const segments = Math.max(1, Math.floor(maxSegments));
+  const value = Number.isFinite(peak) && peak > 0 ? peak : 0;
+  /*
+   * **完全没有数据**时给一个固定小量程（0/5/10）。
+   *
+   * 不能按「峰值 0 → 格宽 1 → 上限 1」来：空图表上会只剩 `0/1` 两条刻度，
+   * 看着像坏了。10 tok/s 的框一看就知道「这是空的」。
+   */
+  if (value === 0) {
+    const empty: AxisScale = { max: 10, step: 5, ticks: [0, 5, 10] };
+    return empty;
+  }
+  for (const step of AXIS_STEPS) {
+    if (Math.ceil(value / step) > segments) continue;
+    const used = Math.max(1, Math.ceil(value / step));
+    const max = step * used;
+    const ticks: number[] = [];
+    for (let index = 0; index <= used; index += 1) ticks.push(step * index);
+    return { max, step, ticks };
+  }
+  // 峰值大到超出阶梯上限（理论上不会）：退回「整千倍」的粗格。
+  const step = Math.ceil(value / segments);
+  const max = step * segments;
+  const ticks: number[] = [];
+  for (let index = 0; index <= segments; index += 1) ticks.push(step * index);
+  return { max, step, ticks };
+}
+
+/**
+ * 纵轴上限（{@link axisScale} 的便捷取法）。
+ * @param value - 峰值（tok/s）。
+ * @returns 不小于 `value` 的整数上限，且上限/格宽是整数段。
+ */
+export function niceMax(value: number): number {
+  return axisScale(value).max;
+}
+
+/**
+ * 造纵轴刻度（从 0 到 `max`，均分 `count` 段，**只出整数**）。
+ *
+ * 注：图表本身用 {@link axisScale} 一起拿上限与刻度（保证刻度落在整格上）。
+ * 这个函数保留给「只想要一组整数刻度」的调用方。
+ * @param max - 纵轴最大值。
  * @param count - 段数（刻度数最多 count + 1）。
  * @returns 从 0 到 `max` 的整数刻度（升序、无重复）。
  */

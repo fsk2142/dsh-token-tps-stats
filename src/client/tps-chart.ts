@@ -40,12 +40,13 @@
 
 import { createElement, useEffect, useState, type ReactElement, type ReactNode } from "react";
 
-import { axisTicks, buildGeometry, niceMax } from "./chart-geometry";
+import { axisScale, buildGeometry } from "./chart-geometry";
 import { closeChart, getChartState, readPillRect, setChartSeconds, subscribeChart, type ChartAnchor } from "./chart-store";
 import type { DshEvent } from "./dom";
 import { formatRate } from "./format";
+import type { SessionStream } from "./session-store";
 import { HAIRLINE, INK, INK_STRONG, SURFACE, TYPO } from "./styles";
-import { historySeries, historySummary, TPS_CHART_RANGES, type TpsChartRange } from "./tps-history";
+import { TPS_CHART_RANGES, type TpsChartRange, type TpsSeriesSummary } from "./tps-history";
 
 /** 弹层宽度（像素）。 */
 const PANEL_WIDTH = 344;
@@ -236,23 +237,35 @@ export function TpsChart(): unknown {
    * 位置每次重画都重新读：优先用仓库里登记的**胶囊当前矩形**（弹层开着时用户
    * 滚动页面或拖窗口，胶囊会动）；仓库里没有元素才退回打开时存下的那份快照。
    */
-  return renderPanel(state.seconds, readPillRect() ?? state.anchor);
+  return renderPanel(state.seconds, readPillRect() ?? state.anchor, state.stream);
 }
 
 /**
  * 渲染弹层内容。
  * @param seconds - 展示时长。
  * @param anchor - 胶囊矩形。
+ * @param stream - 点开的**是哪一份**会话历史（来自胶囊，见 `chart-store.ts`）。
  * @returns 元素。
  */
-function renderPanel(seconds: TpsChartRange, anchor: ChartAnchor | undefined): ReactElement {
+function renderPanel(seconds: TpsChartRange, anchor: ChartAnchor | undefined, stream: SessionStream | undefined): ReactElement {
   const now = Date.now();
-  const points = historySeries(now, seconds);
-  const summary = historySummary(now, seconds);
-  const max = niceMax(summary.peak);
+  /*
+   * **没有会话就没有曲线**。
+   *
+   * 理论上升不到这里（弹层只可能由胶囊点开，胶囊一定带着自己那份状态）。
+   * 但 `shell.overlay` 是 root 槽位，如果宿主在这次渲染前把 dock 撤了，
+   * 这里就只剩一个空壳 —— 与其去读一个不知道是谁的全局历史（那正是用户报的
+   * 「怎么是全局速度」），不如老实显示空态。
+   */
+  const points = stream === undefined ? [] : stream.history.series(now, seconds);
+  const summary: TpsSeriesSummary =
+    stream === undefined
+      ? { average: 0, peak: 0, latest: 0 }
+      : stream.history.summary(now, seconds);
+  const scale = axisScale(summary.peak);
   const geometry = buildGeometry(
     points.map((point) => point.value),
-    { width: PLOT_WIDTH, height: PLOT_HEIGHT, max },
+    { width: PLOT_WIDTH, height: PLOT_HEIGHT, max: scale.max },
   );
   const placement = panelPlacement(anchor);
   const quiet = summary.peak < 0.5;
@@ -282,7 +295,7 @@ function renderPanel(seconds: TpsChartRange, anchor: ChartAnchor | undefined): R
       },
     },
     renderHeader(seconds, summary.latest, summary.average, summary.peak),
-    renderChart({ geometry, max, quiet, seconds }),
+    renderChart({ geometry, scale, quiet, seconds }),
     renderFooter(seconds),
   );
 }
@@ -353,7 +366,8 @@ function renderHeader(seconds: TpsChartRange, latest: number, average: number, p
 /** 折线图参数。 */
 interface ChartViewOptions {
   readonly geometry: ReturnType<typeof buildGeometry>;
-  readonly max: number;
+  /** 纵轴量程（上限 / 格宽 / 刻度），由 `chart-geometry.ts` 的 `axisScale` 算好。 */
+  readonly scale: ReturnType<typeof axisScale>;
   readonly quiet: boolean;
   readonly seconds: TpsChartRange;
 }
@@ -364,12 +378,16 @@ interface ChartViewOptions {
  * 折线、端点、刻度、轴标签**全部用同一个 `INK`**（= 官方胶囊的 `label-tertiary`）：
  * 用户 2026-11-12 的原话是「折线颜色，还有其他文字的字体颜色，和官方那个保持一致」。
  * 之前折线用 `brand-primary`（近黑）、刻度用 `label-secondary`，弹层整体比旁边胶囊黑一档。
- * @param options - 几何 + 状态。
+ *
+ * 纵轴（2026-11-13 用户反馈「峰值过高不要纵轴翻倍，可以 50 递增」）：量程与刻度由
+ * `axisScale` 一并给出，刻度落在整格上（108 → 0/50/100/150，而不是 0/100/200）。
+ * @param options - 几何 + 量程 + 状态。
  * @returns 元素。
  */
 function renderChart(options: ChartViewOptions): ReactElement {
-  const { geometry, max, quiet, seconds } = options;
-  const ticks = axisTicks(max, 2);
+  const { geometry, scale, quiet, seconds } = options;
+  const max = scale.max;
+  const ticks = scale.ticks;
   const gridlines = ticks.map((tick, index) => {
     const y = PLOT_TOP + (PLOT_HEIGHT - (tick / max) * PLOT_HEIGHT);
     return createElement("line", {

@@ -1,23 +1,25 @@
 /**
- * **折线图弹层的开关状态**（2026-11-12，第 3 步）。
+ * **折线图弹层的开关状态**（2026-11-12，第 3 步；2026-11-13 加「看哪个会话」）。
  *
  * ## 为什么是一个模块级小仓库
  *
  * 点击发生在**胶囊**里（`conversation.composer.dock`），而弹层必须画在
  * **`shell.overlay`** 上 —— 那是宿主「横贯整帧的浮层，在所有列之上、也不在它们的
  * 滚动容器里」。两个组件挂在不同的槽位，不共享 React 树，所以只能通过一个模块级
- * 仓库交换「开没开、锚点在哪、看多长时间」。
+ * 仓库交换「开没开、锚点在哪、看多长时间、看**哪个会话**」。
  *
- * ## 为什么不放进胶囊组件自己的 state
+ * ## 为什么「看哪个会话」要存在这里
  *
- * 弹层在另一个槽位、是另一个组件；胶囊的 state 传不过去。反过来把弹层塞进胶囊
- * 也不行 —— dock 在输入框下方、处在会滚动/被裁剪的容器里，浮层会被切掉。
+ * dock 是 `scope: "session"`（胶囊拿得到 `useChat`/`sessionId`），而 `shell.overlay`
+ * 是 `scope: root`（拿不到）—— 弹层自己推不出「用户刚才点的是哪个会话」。
+ * 所以胶囊在打开时把**它认领的那份会话状态**一起交过来，弹层只管读。
  *
- * 仓库里只存**纯数据**（布尔 + 几个数字），不碰 React、不碰 DOM，可以单测。
+ * 仓库里只存纯数据与一个状态引用，不碰 React、不碰 DOM，可以单测。
  *
  * @module dsh-token-tps-stats/src/client/chart-store
  */
 
+import type { SessionStream } from "./session-store";
 import { TPS_CHART_DEFAULT_SECONDS, type TpsChartRange } from "./tps-history";
 
 /** 锚点：胶囊那一刻的屏幕矩形（只留摆弹层要用的四个边）。 */
@@ -36,10 +38,12 @@ export interface ChartState {
   readonly anchor: ChartAnchor | undefined;
   /** 展示时长（秒）。 */
   readonly seconds: TpsChartRange;
+  /** 打开时点的是**哪个会话**的胶囊（弹层据此读那一份历史）。 */
+  readonly stream: SessionStream | undefined;
 }
 
 /** 初始状态：关闭、默认 1 分钟。 */
-const INITIAL: ChartState = { open: false, anchor: undefined, seconds: TPS_CHART_DEFAULT_SECONDS };
+const INITIAL: ChartState = { open: false, anchor: undefined, seconds: TPS_CHART_DEFAULT_SECONDS, stream: undefined };
 
 /** 当前状态（模块级单例）。 */
 let state: ChartState = INITIAL;
@@ -107,13 +111,15 @@ export function subscribeChart(listener: () => void): () => void {
 /**
  * 开/关弹层（点胶囊）。
  *
- * 关的时候顺手把锚点丢掉 —— 留着会让下次打开前的一帧（如果正好在渲染）用旧位置。
+ * 关的时候顺手把锚点与所属会话丢掉 —— 留着会让下次打开前的一帧（如果正好在渲染）
+ * 用旧位置/旧会话。
  * @param anchor - 胶囊当前的屏幕矩形；`undefined` 表示这次是关。
+ * @param stream - 点的是哪个会话的胶囊（弹层据此读那一份历史）。
  */
-export function toggleChart(anchor?: ChartAnchor): void {
+export function toggleChart(anchor?: ChartAnchor, stream?: SessionStream): void {
   state = state.open
-    ? { open: false, anchor: undefined, seconds: state.seconds }
-    : { open: true, anchor, seconds: state.seconds };
+    ? { open: false, anchor: undefined, seconds: state.seconds, stream: undefined }
+    : { open: true, anchor, seconds: state.seconds, stream };
   emit();
 }
 
@@ -122,7 +128,7 @@ export function toggleChart(anchor?: ChartAnchor): void {
  */
 export function closeChart(): void {
   if (!state.open) return;
-  state = { open: false, anchor: undefined, seconds: state.seconds };
+  state = { open: false, anchor: undefined, seconds: state.seconds, stream: undefined };
   emit();
 }
 
@@ -133,6 +139,16 @@ export function closeChart(): void {
 export function setChartSeconds(seconds: TpsChartRange): void {
   if (state.seconds === seconds) return;
   state = { ...state, seconds };
+  emit();
+}
+
+/**
+ * 换「看哪个会话」（理论上只有打开时用得到；留一个显式入口便于将来做会话对比）。
+ * @param stream - 要展示的那份会话历史。
+ */
+export function setChartStream(stream: SessionStream | undefined): void {
+  if (state.stream === stream) return;
+  state = { ...state, stream };
   emit();
 }
 

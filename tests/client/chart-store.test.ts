@@ -7,6 +7,8 @@
  */
 import { beforeEach, describe, expect, it } from "vitest";
 
+import type { SessionStream } from "../../src/client/session-store";
+
 import {
   closeChart,
   getChartState,
@@ -22,6 +24,9 @@ import {
 /** 一个假的胶囊矩形。 */
 const anchor: ChartAnchor = { left: 100, top: 200, right: 260, bottom: 220 };
 
+/** 一个假的会话状态（本用例只关心「弹层记不记得看的是谁」）。 */
+const stream = { sessionKey: "s1" } as unknown as SessionStream;
+
 beforeEach(() => {
   resetChartStateForTests();
 });
@@ -31,17 +36,19 @@ describe("弹层开关", () => {
     expect(getChartState().open).toBe(false);
   });
 
-  it("点胶囊打开，并记下锚点", () => {
-    toggleChart(anchor);
+  it("点胶囊打开，并记下锚点与**所属会话**", () => {
+    toggleChart(anchor, stream);
     expect(getChartState().open).toBe(true);
     expect(getChartState().anchor).toEqual(anchor);
+    expect(getChartState().stream).toBe(stream);
   });
 
-  it("再点一次关掉，**并且把锚点清掉**（否则下次打开前一帧会用旧位置）", () => {
-    toggleChart(anchor);
+  it("再点一次关掉，**并且把锚点与所属会话清掉**（否则下次打开前一帧会用旧数据）", () => {
+    toggleChart(anchor, stream);
     toggleChart(anchor);
     expect(getChartState().open).toBe(false);
     expect(getChartState().anchor).toBeUndefined();
+    expect(getChartState().stream).toBeUndefined();
   });
 
   it("`closeChart` 是幂等的（已经关着时不再通知订阅者）", () => {

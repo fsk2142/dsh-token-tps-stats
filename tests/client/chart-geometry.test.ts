@@ -10,7 +10,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { axisTicks, buildGeometry, niceMax } from "../../src/client/chart-geometry";
+import { axisScale, axisTicks, buildGeometry, niceMax } from "../../src/client/chart-geometry";
 
 /** 从 path 里取出所有坐标（控制点与端点都算）。 */
 function pathPoints(d: string): { x: number; y: number }[] {
@@ -22,27 +22,53 @@ function pathPoints(d: string): { x: number; y: number }[] {
   return points;
 }
 
-describe("纵轴：取整到可读的数", () => {
+describe("纵轴：量程贴着峰值，按阶梯走", () => {
   it("47 → 50（不是 47 这种读不顺的数）", () => {
     expect(niceMax(47)).toBe(50);
   });
 
-  it("11 → 20", () => {
-    expect(niceMax(11)).toBe(20);
+  it("**11 → 15，不是 20**（用户 2026-11-13：峰值别翻倍，按 50 递增）", () => {
+    // 格宽 5、3 段正好放下 11 —— 旧的 1/2/2.5/5 ×10^n 会给 20，曲线被压一半。
+    expect(niceMax(11)).toBe(15);
+    expect(axisScale(11).ticks).toEqual([0, 5, 10, 15]);
   });
 
-  it("3.4 → 5", () => {
-    expect(niceMax(3.4)).toBe(5);
+  it("**108 → 150**（用户点名的例子：峰值取 50 的整数倍）", () => {
+    expect(niceMax(108)).toBe(150);
+    expect(axisScale(108).ticks).toEqual([0, 50, 100, 150]);
+  });
+
+  it("29 → 30（格宽 10）", () => {
+    expect(niceMax(29)).toBe(30);
+    expect(axisScale(29).ticks).toEqual([0, 10, 20, 30]);
+  });
+
+  it("3.4 → 4（格宽 2）", () => {
+    expect(niceMax(3.4)).toBe(4);
+    expect(axisScale(3.4).ticks).toEqual([0, 2, 4]);
   });
 
   it("100 → 100（正好整除时不再放大一档）", () => {
     expect(niceMax(100)).toBe(100);
   });
 
-  it("0 或负值给一个最小量程", () => {
+  it("0 或负值给一个固定小量程（空图表不该只剩 0/1 两条刻度）", () => {
     expect(niceMax(0)).toBe(10);
     expect(niceMax(-5)).toBe(10);
     expect(niceMax(Number.NaN)).toBe(10);
+    expect(axisScale(0).ticks).toEqual([0, 5, 10]);
+  });
+
+  it("**上限永远是格宽的整数倍**（这样刻度才落在整格上）", () => {
+    for (const peak of [1, 3, 7, 11, 29, 47, 108, 240, 1_001, 2_400]) {
+      const scale = axisScale(peak);
+      expect(scale.max % scale.step, `${peak}: ${scale.max} 不是 ${scale.step} 的倍数`).toBe(0);
+      expect(scale.ticks[0]).toBe(0);
+      expect(scale.ticks.at(-1)).toBe(scale.max);
+      expect(scale.max).toBeGreaterThanOrEqual(peak);
+      // 别浪费太多纵向空间：最多比峰值高出「一格 + 一点点」。
+      expect(scale.max - peak).toBeLessThanOrEqual(scale.step);
+    }
   });
 
   it("刻度从 0 到 max，两端都含", () => {

@@ -78,6 +78,8 @@ export interface TpsSeriesSummary {
 export interface TpsHistory {
   /** 记一帧文本（空串忽略）。 */
   push(text: string, at: number): void;
+  /** 记**已经数好**的一批字符（调用方自己做过差分与摊开，见 `session-store.ts`）。 */
+  pushCounts(counts: { cjk: number; other: number }, at: number): void;
   /** 画图用的序列：**最旧 → 最新**，长度恒为请求的秒数。 */
   series(at: number, seconds: number): TpsSeriesPoint[];
   /** 序列的统计值。 */
@@ -100,6 +102,18 @@ export function createTpsHistory(
 
   /** 当前时刻所属的桶序号。 */
   const binIndexOf = (at: number): number => Math.floor(at / binMs);
+
+  /** 把一批字符计数记到某个秒桶里（两个 `push` 路径共用）。 */
+  const accumulate = (counts: { cjk: number; other: number }, at: number): void => {
+    const index = binIndexOf(at);
+    const bin = bins.get(index);
+    if (bin === undefined) bins.set(index, { cjk: counts.cjk, other: counts.other });
+    else {
+      bin.cjk += counts.cjk;
+      bin.other += counts.other;
+    }
+    prune(index);
+  };
 
   /** 丢掉落出保留期的桶（保留期 = 历史长度 + 平滑窗口）。 */
   const prune = (binIndex: number): void => {
@@ -143,16 +157,11 @@ export function createTpsHistory(
   return {
     push: (text, at) => {
       if (typeof text !== "string" || text === "") return;
-      const counts = countChars(text);
-      if (counts.cjk === 0 && counts.other === 0) return;
-      const index = binIndexOf(at);
-      const bin = bins.get(index);
-      if (bin === undefined) bins.set(index, { cjk: counts.cjk, other: counts.other });
-      else {
-        bin.cjk += counts.cjk;
-        bin.other += counts.other;
-      }
-      prune(index);
+      accumulate(countChars(text), at);
+    },
+    pushCounts: (counts, at) => {
+      if (counts.cjk <= 0 && counts.other <= 0) return;
+      accumulate(counts, at);
     },
     series: (at, seconds) => pointsAt(at, seconds),
     summary: (at, seconds) => {

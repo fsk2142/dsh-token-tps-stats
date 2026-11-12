@@ -1,11 +1,26 @@
 /**
- * **实时 tok/s 的显示**（2026-11-12，第 2 步；第 3 步加「可点击」）。
+ * **实时 tok/s 的胶囊**（2026-11-12，第 2 步；第 3 步加「可点击」；
+ * 2026-11-13 改成「每个会话一份」）。
  *
  * ## 放在哪
  *
  * 注册进 `conversation.composer.dock`，`order: -1` —— 官方那两个胶囊
- * （轮次/步数 = order 0、用量 = order 1）排在右边，所以它出现在输入框底部
- * 那一行「92 轮 4018 步 · …」的**左边**。
+ * （轮次/步数 = order 0、用量 = 1）排在右边，所以它出现在输入框底部那一行
+ * 「92 轮 4018 步 · …」的**左边**。
+ *
+ * ## 数据从哪来（2026-11-13 用户反馈「怎么是全局的会话速度」）
+ *
+ * 这个槽位是 `scope: "session"`：宿主给使用者发的是**这个会话**的 `useChat`
+ * 选择器和 `sessionId`。官方那两个胶囊就是这么读的，我们也只读这一步：
+ *
+ * ```
+ * const partial = useChat((snapshot) => snapshot.legacy.partial);   // 正在生成的那一步
+ * useEffect(() => pushSnapshot(entry, partial, Date.now()), [partial]);
+ * ```
+ *
+ * 不再注册 `uiConversation.events` 的 Definition —— 那张注册表是**全局**的，
+ * 每个会话都会把它拿去匹配自己那份事件流，累加器只能是一锅粥（详见
+ * `session-store.ts` 与 `progress.ts` 的说明）。
  *
  * ## 样式为什么写成一串 CSS 变量的 calc（2026-11-12 用户实测反馈）
  *
@@ -30,27 +45,23 @@
  *
  * 用户原话：「完全没有会话动作的时候直接显示 0 tok/s 吧，不要消失」。
  *
- * 上一版归零就 `return null`，于是模型一停组件就没了 —— 用户看到的正是「好像又没了」。
- * 现在**始终渲染**：有速度显示速度，没有就显示 `0`。
- *
  * ## 为什么定时器要能停也能重启
  *
  * 「指针回落」需要即使没有新事件也重算（每 100ms 一次）。但值已经是 0 之后就没必要
- * 再算了 —— 所以归零时**停表**，等下一帧到达（`notify()`）再重启。
- * 这样空闲时不会留一个每秒唤醒 10 次的主线程定时器（上一版就是那样，还伴随
- * 控制台的 `Forced reflow` 警告）。
+ * 再算了 —— 所以归零时**停表**，等下一拍数据（`pushSnapshot`）再重启。
+ * 这样空闲时不会留一个每秒唤醒 10 次的主线程定时器。
  *
  * ## 第 3 步：点击打开折线图
  *
- * 用户新要求：「这个胶囊可以点击，点击的时候显示一段折线图，反映一段时间内 tps 的变化」。
+ * 用户要求：「这个胶囊可以点击，点击的时候显示一段折线图，反映一段时间内 tps 的变化」。
  *
  * 实现上分三块，各自独立可测：
- * - 本文件：胶囊本体（按钮语义 + 点击时把**自己的屏幕矩形**交给状态仓库）；
+ * - 本文件：胶囊本体（按钮语义 + 点击时把自己的屏幕矩形与**本会话的流**交给状态仓库）；
  * - `chart-store.ts`：模块级开关（胶囊和弹层不共享 React 树，只能这样交换数据）；
  * - `tps-chart.ts`：画在 `shell.overlay` 上的弹层（折线图 + 时长切换）。
  *
- * 点胶囊时读的是**自己**的 `getBoundingClientRect()` —— 不是去读旁边官方胶囊的 DOM
- * 来「猜」排版。宿主允许读自己元素的矩形，弹层据此摆在胶囊正上方。
+ * 弹层所在的 `shell.overlay` 是 `scope: root`，拿不到 `useChat`/`sessionId` ——
+ * 所以「看哪个会话的曲线」必须由胶囊在打开时一起交过去，弹层自己推不出来。
  *
  * @module dsh-token-tps-stats/src/client/tps-pill
  */
@@ -59,10 +70,8 @@ import { createElement, useEffect, useState, type ReactElement } from "react";
 
 import { getChartState, setPillElement, subscribeChart, toggleChart, type ChartAnchor } from "./chart-store";
 import { formatRate } from "./format";
-import { createLiveBuffer, type FlushedFrame } from "./live-buffer";
+import { claimSessionStream, pushSnapshot, readingOf, releaseSessionStream, type SessionStream } from "./session-store";
 import { TYPO } from "./styles";
-import { pushHistory } from "./tps-history";
-import { createTpsMeter } from "./tps-meter";
 
 export { formatRate };
 
@@ -89,145 +98,17 @@ function registerPillElement(element: unknown): void {
   setPillElement(typeof candidate.getBoundingClientRect === "function" ? candidate as { getBoundingClientRect(): ChartAnchor } : undefined);
 }
 
-/** 速度计的最小面（便于测试注入替身）。 */
-export interface TpsMeterLike {
-  push(text: string, at: number): void;
-  reading(at: number): number | undefined;
-  settle(at: number): void;
-}
-
 /**
- * 模块级速度计（**全会话一个**）。
+ * 胶囊拿得到的槽位属性（**只声明我们用到的两个**）。
  *
- * 为什么放模块级而不是组件里：事件定义在插件生命周期内注册一次，必须把帧推进
- * **同一个**累加器；而组件可能因槽位重注册反复挂载，状态不能跟着丢。
+ * 宿主对所有 `scope: "session"` 的槽位都会提供这一批标准属性，
+ * 但我们不 `require` 宿主包（那是私有 API）—— 所以按鸭子类型只写这两个。
  */
-let meter: TpsMeterLike | undefined;
-
-/**
- * 注入/替换速度计（生产由首次 `readingAt` 创建；测试用它放替身）。
- * @param next - 要使用的实例。
- */
-export function useTpsMeter(next: TpsMeterLike): void {
-  meter = next;
-}
-
-/**
- * 确保速度计存在（幂等）。
- * @returns 当前实例。
- */
-function ensureMeter(): TpsMeterLike {
-  if (meter === undefined) meter = createTpsMeter();
-  return meter;
-}
-
-/**
- * 胶囊的订阅者。
- *
- * **只有胶囊自己用**：它挂载时登记，帧到达（排空后）时被通知一次去刷新数字。
- *
- * 折线图弹层曾经也订阅（想「帧到就立刻重画」），后来又去掉了 —— 折线按**整秒**取点，
- * 每秒最多变一次，逐帧重画只会白烧一次布局（弹层位置要读 `getBoundingClientRect`，
- * 那会强制回流）。所以这里不再导出订阅入口，少一个对外契约。
- */
-const listeners = new Set<() => void>();
-
-/** 通知所有订阅者「数据变了」。 */
-function notify(): void {
-  for (const listener of listeners) listener();
-}
-
-/**
- * 推进一帧（由事件定义调用）。
- *
- * ## 为什么先进缓冲（2026-11-13，修「峰值偶尔冲到 1000 多」）
- *
- * 直接按 `at` 累计会把「积压后一次性 flush」的几千帧压进同一毫秒；缓冲攒一个宏任务后
- * 再按**宿主时间差**铺回它们真正跨越的那段时间（详见 `pacing.ts` 的说明）。
- * 正常流式下缓冲延迟 0~4ms，读数观感与逐帧推送没有区别。
- * @param chunk - 流式 chunk（含 `type` 与 `text`）。
- * @param meta - 该帧所属的 turn/step（当前不参与计算）。
- * @param at - 帧到达时刻（毫秒）。
- * @param hostTime - 宿主事件自身的时刻（用于重排；缺失时退回 `at`）。
- */
-export function pushLiveChunk(
-  chunk: unknown,
-  meta: { turn?: unknown; step?: unknown },
-  at: number,
-  hostTime?: number,
-): void {
-  void meta;
-  if (typeof chunk !== "object" || chunk === null) return;
-  const type = (chunk as { type?: unknown }).type;
-  /*
-   * **只认正文与思考**。思考也是模型真实产出的字（官方 `outputTokens` 含它），
-   * 所以算进来；`usage` / `block-start` / `block-end` 不含文本，直接忽略。
-   */
-  if (type !== "text-delta" && type !== "reasoning-delta") return;
-  const text = (chunk as { text?: unknown }).text;
-  if (typeof text !== "string" || text === "") return;
-  liveBuffer().push({ text, arrival: at, host: hostTime });
-}
-
-/**
- * 排空一批（时刻已经算好）：喂速度计与历史，再通知订阅者一次。
- * @param frames - 已重排好的帧。
- */
-function consumeFrames(frames: readonly FlushedFrame[]): void {
-  if (frames.length === 0) return;
-  for (const frame of frames) {
-    ensureMeter().push(frame.text, frame.at);
-    /*
-     * 同一批文本**也**喂给折线图的历史（按秒聚合原始字符）。
-     *
-     * 两套累加器而不是一套：速度计只保留 9 秒（那是胶囊需要的跨度），折线图要 3 分钟。
-     * 让速度计同时承担两种跨度，会把那个已经稳定的计算核心搅浑。
-     */
-    pushHistory(frame.text, frame.at);
-  }
-  // 整批只通知一次：几千帧逐帧通知会让 React 每次都重渲染。
-  notify();
-}
-
-/**
- * 模块级帧缓冲（**全会话一个**，与速度计同一理由）。
- *
- * 没有帧排队时它**不持有任何定时器**（`createLiveBuffer` 只在 `push` 时排一次）。
- */
-let buffer: ReturnType<typeof createLiveBuffer> | undefined;
-
-/** 确保帧缓冲存在（幂等）。 */
-function liveBuffer(): ReturnType<typeof createLiveBuffer> {
-  if (buffer === undefined) buffer = createLiveBuffer(consumeFrames);
-  return buffer;
-}
-
-/**
- * 清掉待处理的帧（插件卸载 / 槽位重注册时）。
- *
- * 不清的话，已排队的帧会在卸载后继续推给一个已经没人显示的仪表。
- */
-export function disposeLiveBuffer(): void {
-  buffer?.dispose();
-  buffer = undefined;
-}
-
-/**
- * 本轮结束：只停止**计入新帧**，不清空窗口 —— 指针要靠着已有读数衰减下去。
- * @param at - 结束时刻（毫秒）。
- */
-export function settleLiveStream(at: number): void {
-  meter?.settle(at);
-}
-
-/**
- * 读当前速度。**空闲时返回 0，而不是 `undefined`**（用户要求始终显示）。
- * @param at - 现在（毫秒）。
- * @returns 估算 tok/s（非负）。
- */
-export function readingAt(at: number): number {
-  const reading = meter?.reading(at);
-  return typeof reading === "number" && Number.isFinite(reading) && reading > 0 ? reading : 0;
+export interface TpsPillProps {
+  /** 读当前会话的聊天快照（官方胶囊同款选择器钩子）。 */
+  readonly useChat?: unknown;
+  /** 当前会话 id。 */
+  readonly sessionId?: unknown;
 }
 
 /** 与官方 `.pill` 逐条对齐的内联样式（理由见文件头）。 */
@@ -246,7 +127,6 @@ const PILL_STYLE = {
   gap: "6px",
   padding: "1px 8px",
   display: "inline-flex",
-  // 第 3 步：可点击。光标是唯一不需要 hover 样式也能读懂的提示。
   cursor: "pointer",
 } as const;
 
@@ -264,13 +144,9 @@ const ANCHOR_STYLE = {
  *
  * ## 为什么用官方的路径数据（2026-11-12 用户反馈「有点小、对比官方不太好看」）
  *
- * 第一版我自己画了「一条上弧 + 一枚指针」，但：
- * - 缺了圆心那个**实心点**，少了辨识度；
- * - `strokeWidth: 1.4` 比官方粗，小尺寸下糊成一团。
- *
- * 现在逐字采用宿主图标集里 `gauge-outline` 的几何（从 `dsh-web-frontend` 的
- * 图标表读出）：`viewBox 0 0 16 16`、`stroke-width: 1`（官方 regular 档）、
- * 三段 path（外弧 + 指针 + 圆心实心点）。
+ * 第一版我自己画了「一条上弧 + 一枚指针」，但缺了圆心那个**实心点**、`strokeWidth`
+ * 也比官方粗，小尺寸下糊成一团。现在逐字采用宿主图标集里 `gauge-outline` 的几何：
+ * `viewBox 0 0 16 16`、`stroke-width: 1`、三段 path（外弧 + 指针 + 圆心实心点）。
  *
  * 尺寸仍由外层样式决定（官方 `.pill svg { width:14px; height:14px }`）。
  * @returns SVG 元素。
@@ -309,44 +185,79 @@ function GaugeIcon(): ReactElement {
 
 /**
  * 实时速度胶囊。**始终渲染**（空闲时显示 `0 tok/s`），点击打开折线图。
+ * @param props - 槽位标准属性（只用 `useChat` 与 `sessionId`）。
  * @returns 元素。
  */
-export function TpsPill(): unknown {
-  const [value, setValue] = useState<number>(() => readingAt(Date.now()));
+export function TpsPill(props: TpsPillProps = {}): unknown {
+  const sessionKey = typeof props.sessionId === "string" ? props.sessionId : undefined;
+  /*
+   * 认领一份**属于这个会话**的状态。
+   *
+   * `useState` 的惰性初始化只在首次渲染跑一次：会话 id 变了 React 会给这个组件换 key
+   * （槽位按 session 重建），所以这里不必处理「中途换 id」的情况；万一宿主没换 key，
+   * 下面的 effect 会把状态重新认领一次（见依赖表）。
+   */
+  const [entry, setEntry] = useState<SessionStream>(() => claimSessionStream(sessionKey));
+
+  /*
+   * 读当前会话「正在生成的这一步」。
+   *
+   * `legacy.partial` 的形状是 `{ turn, step, blocks }`，`blocks` 里的文本是**累计**的
+   * （宿主每来一帧就拼一次）。这里订阅的正是官方胶囊用的那份快照 —— 它只含**这个会话**
+   * 的内容，所以不会再混进别的会话。
+   *
+   * 钩子必须无条件调用（React 的规则），所以先在本行取值，再在 effect 里推。
+   */
+  const useChat = props.useChat as ((selector: (snapshot: unknown) => unknown) => unknown) | undefined;
+  const partial = typeof useChat === "function" ? useChat((snapshot) => (snapshot as { legacy?: { partial?: unknown } })?.legacy?.partial) : undefined;
+
+  const [value, setValue] = useState<number>(() => readingOf(entry, Date.now()));
   const [expanded, setExpanded] = useState<boolean>(() => getChartState().open);
 
+  /*
+   * 会话换了（理论上宿主会给新 key，但这里仍兜一层）：换到新的那份状态，并把旧的还回去。
+   */
   useEffect(() => {
-    /** 当前运行中的定时器（归零后停、新帧到达再启）。 */
-    let timer: ReturnType<typeof setInterval> | undefined;
-    const stop = (): void => {
-      if (timer === undefined) return;
-      clearInterval(timer);
-      timer = undefined;
-    };
-    const start = (): void => {
-      if (timer !== undefined) return;
-      timer = setInterval(() => {
-        const next = readingAt(Date.now());
-        setValue(next);
-        // 到 0 就停表：没有需要动画的数字了，别继续唤醒主线程。
-        if (next === 0) stop();
-      }, TICK_MS);
-    };
-    const listener = (): void => {
-      const next = readingAt(Date.now());
+    if (entry.sessionKey === sessionKey) return;
+    const next = claimSessionStream(sessionKey);
+    releaseSessionStream(entry);
+    setEntry(next);
+  }, [entry, sessionKey]);
+
+  /*
+   * 每一拍快照 → 差分 + 摊开 → 速度计与历史。
+   *
+   * 放在 effect 里而不是渲染中：渲染必须无副作用（StrictMode 下渲染会跑两次）。
+   * 差分本身是幂等的 —— 同一份 `partial` 重复推一次，`newTextSince` 看到「文本没变长」
+   * 就什么都不产出。
+   */
+  useEffect(() => {
+    if (partial === undefined) return;
+    if (!pushSnapshot(entry, partial, Date.now())) return;
+    setValue(readingOf(entry, Date.now()));
+  }, [entry, partial]);
+
+  /*
+   * 指针回落需要**没有新数据时也继续重算**（每 100ms 一次）；归零就停表。
+   *
+   * 依赖用 `[entry, active]` 而不是 `[entry, value]`：读出 47→48→49 这种变化时
+   * 定时器不该被拆了重建（那会每 100ms 造一个定时器）。只在「有速度 ↔ 归零」
+   * 这条边界上启停。
+   */
+  const active = value > 0;
+  useEffect(() => {
+    if (!active) return;
+    const timer = setInterval(() => {
+      const next = readingOf(entry, Date.now());
       setValue(next);
-      // 有了新数据：指针又要动起来，重启定时器。
-      if (next > 0) start();
-    };
-    listeners.add(listener);
-    if (readingAt(Date.now()) > 0) start();
-    const offChart = subscribeChart(() => setExpanded(getChartState().open));
-    return () => {
-      listeners.delete(listener);
-      offChart();
-      stop();
-    };
-  }, []);
+      // 到 0 就停表：没有需要动画的数字了，别继续唤醒主线程。
+      if (next === 0) setValue(0);
+    }, TICK_MS);
+    return () => clearInterval(timer);
+  }, [entry, active]);
+
+  /** 订阅弹层的开关（只为了给按钮刷 `aria-expanded`）。 */
+  useEffect(() => subscribeChart(() => setExpanded(getChartState().open)), []);
 
   /**
    * 胶囊自己的屏幕矩形（作为弹层的锚点）。
@@ -365,7 +276,7 @@ export function TpsPill(): unknown {
 
   return createElement(
     "span",
-    { "data-composer-stat": "llm-account-tps", style: ANCHOR_STYLE },
+    { "data-composer-stat": "token-tps", style: ANCHOR_STYLE },
     createElement(
       "button",
       {
@@ -374,8 +285,6 @@ export function TpsPill(): unknown {
         /*
          * 登记自己的 DOM 元素：弹层开着时用户滚动/拖窗口，胶囊位置会变，
          * 弹层每次重画都读一次**当前**矩形，跟着胶囊走而不是钉在旧位置。
-         * 用模块级常量回调，避免每次渲染都换一个函数引用（那会让 React
-         * 每次先 `ref(null)` 再 `ref(node)`）。
          */
         ref: registerPillElement,
         style: PILL_STYLE,
@@ -383,7 +292,7 @@ export function TpsPill(): unknown {
         "aria-expanded": expanded,
         "aria-haspopup": "dialog",
         "aria-label": `实时输出速度（TPS）：${formatRate(value)} tok/s，点击查看变化曲线`,
-        onClick: (event: { currentTarget: unknown }) => toggleChart(anchorOf(event)),
+        onClick: (event: { currentTarget: unknown }) => toggleChart(anchorOf(event), entry),
       },
       GaugeIcon(),
       /*
@@ -412,3 +321,6 @@ export function TpsPill(): unknown {
     ),
   );
 }
+
+/** 兼容旧导出名（`install.ts` 用 `TpsPill`，测试用 `TpsPill`）。 */
+export { TpsPill as TpsPillComponent };
