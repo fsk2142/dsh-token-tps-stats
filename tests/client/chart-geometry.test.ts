@@ -65,9 +65,17 @@ describe("纵轴：格宽只走 50 的倍数", () => {
     }
   });
 
-  it("峰值很大时格宽放大，但仍按整数格走（刻度会挤不下）", () => {
-    // 251 起 50 格要 6 段（7 条线），92px 里挤不下 → 格宽升到 100。
-    expect(axisScale(251).step).toBe(100);
+  it("**250 以内一律每 50 一格**（真实会话的峰值基本都在这一段）", () => {
+    for (const peak of [51, 96, 108, 150, 199, 210, 249]) {
+      expect(axisScale(peak).step, `峰值 ${peak}`).toBe(50);
+    }
+    // 251 还能撑到 300（7 条线，92px 里约 15px 一条）。
+    expect(axisScale(251).step).toBe(50);
+    expect(axisScale(300).ticks).toEqual([0, 50, 100, 150, 200, 250, 300]);
+  });
+
+  it("峰值再大时格宽放大，但仍按整数格走（刻度会挤不下）", () => {
+    expect(axisScale(349).step).toBe(100);
     expect(axisScale(1_001).step).toBe(250);
     expect(axisScale(2_400).step).toBe(500);
   });
