@@ -258,6 +258,7 @@ pnpm typecheck && pnpm test && pnpm build
 | 胶囊完全不出现 | 控制台有没有 `tps pill: registered`；没有就是槽位或注入问题 |
 | 点了没反应 | 控制台有没有 `tps chart: registered`；没有就是 `shell.overlay` 没挂上 |
 | 弹层灰色底 | `SURFACE.background` 是不是又被改回 `--dsw-alias-bg-overlay` |
+| **折线图区域是灰的，但卡片是白的** | 曲线下方是不是又铺了面积填充（`color-mix(brand-primary 12%)`）—— 本主题的 brand-primary 是**近黑色**，12% 近黑叠在白卡片上就是一片灰。2026-11-12 已去掉该填充，只画线 |
 | 弹层字与胶囊不一致 | 弹层是不是又写死了 `fontSize: 12px`（应走 `TYPO`） |
 | 点胶囊后弹层闪烁/开不动 | `pointerdown` 里是不是漏了放过 `PILL_ATTRIBUTE` |
 | 弹层位置飘 | `readPillRect()` 是否仍在每次重画时调用；`ref` 回调是否仍是模块级常量 |

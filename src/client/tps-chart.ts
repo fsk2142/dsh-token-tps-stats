@@ -46,7 +46,6 @@ import type { DshEvent } from "./dom";
 import { formatRate } from "./format";
 import { ACCENT, HAIRLINE, MUTED, SURFACE, TYPO } from "./styles";
 import { historySeries, historySummary, TPS_CHART_RANGES, type TpsChartRange } from "./tps-history";
-import { subscribeLive } from "./tps-pill";
 
 /** 弹层宽度（像素）。 */
 const PANEL_WIDTH = 344;
@@ -188,10 +187,15 @@ export function TpsChart(): unknown {
 
   useEffect(() => {
     if (!state.open) return;
-    // 时间轴在走：即使没有新帧，曲线也要随时间右移。
+    /*
+     * 每 500ms 重画一次：时间轴在走，即使没有新帧，曲线也要随时间右移。
+     *
+     * **为什么不再订阅每一帧**：折线按**整秒**取点（最后一点落在上一个已走完的秒），
+     * 所以一个 60 秒的图每秒最多变一次 —— 流式帧每秒几十个，逐帧重画只会白烧
+     * 一次布局（面板位置要读 `getBoundingClientRect`，那会强制浏览器回流）。
+     * 500ms 的节奏足够让新的一秒在半个周期内出现，观感与逐帧重画没有区别。
+     */
     const timer = setInterval(() => setTick((tick) => tick + 1), OPEN_TICK_MS);
-    // 有新帧时立刻重画，不必等下一次 tick。
-    const offLive = subscribeLive(() => setTick((tick) => tick + 1));
     const onKey = (event: DshEvent): void => {
       if (event.key !== "Escape") return;
       event.stopPropagation?.();
@@ -216,7 +220,6 @@ export function TpsChart(): unknown {
     window.addEventListener("resize", onResize);
     return () => {
       clearInterval(timer);
-      offLive();
       window.removeEventListener("keydown", onKey, true);
       window.removeEventListener("pointerdown", onPointerDown, true);
       window.removeEventListener("resize", onResize);
@@ -406,11 +409,17 @@ function renderChart(options: ChartViewOptions): ReactElement {
         : createElement(
             "g",
             { transform: `translate(${PLOT_LEFT} ${PLOT_TOP})` },
-            createElement("path", {
-              d: geometry.area,
-              fill: "color-mix(in srgb, var(--dsw-alias-brand-primary, #2563eb) 12%, transparent)",
-              stroke: "none",
-            }),
+            /*
+             * **不填面积**（2026-11-12 用户看截图后反馈「折线图里为什么还是灰色的」）。
+             *
+             * 上一版给曲线下方铺了一层 `color-mix(brand-primary 12%, transparent)`。
+             * 本主题的 `--dsw-alias-brand-primary` 是**近黑色**（#0f1115），
+             * 12% 的近黑叠在白色卡片上就是一片**灰**——用户看到「图表区域是灰的」
+             * 正是这层填充，不是卡片底色（卡片已经是白的）。
+             *
+             * 换浅蓝也不行：那会把「白底 + 黑线」的官方观感改成另一种配色。
+             * 所以这里只画线，绘图区留白，与卡片同色。
+             */
             createElement("path", {
               d: geometry.line,
               fill: "none",
