@@ -32,10 +32,11 @@
  * @module dsh-token-tps-stats/src/client/session-store
  */
 
-import { newTextSince, streamKeyOf, type ProgressBaseline } from "./progress";
+import { newTextSince, streamKeyOf, toolCallInFlight, type ProgressBaseline } from "./progress";
 import { spreadCounts } from "./spread";
 import { countChars, createTpsMeter, type TpsMeter } from "./tps-meter";
 import { createTpsHistory, type TpsHistory } from "./tps-history";
+import type { PillMode } from "./label";
 
 /** 一份会话状态。 */
 export interface SessionStream {
@@ -49,6 +50,13 @@ export interface SessionStream {
   baseline: ProgressBaseline | undefined;
   /** 上一次采样的时刻（摊开的时间区间起点）。 */
   sampledAt: number;
+  /**
+   * 这一拍是否处在「只在调工具、没有可见文字」的阶段。
+   *
+   * 只影响胶囊上的文字（`工具调用中` vs `0 tok/s`），**不进速度计** ——
+   * 工具参数在快照里拿不到增量，算不进 tok/s。
+   */
+  toolInFlight: boolean;
 }
 
 /** 所有会话的状态（key = sessionId）。 */
@@ -67,6 +75,7 @@ function entryFor(key: string): SessionStream {
       history: createTpsHistory(),
       baseline: undefined,
       sampledAt: 0,
+      toolInFlight: false,
     };
     streams.set(key, entry);
   }
@@ -101,8 +110,17 @@ export function pushSnapshot(entry: SessionStream, partial: unknown, at: number)
   if (shape === null || shape === undefined) {
     entry.baseline = undefined;
     entry.sampledAt = at;
+    entry.toolInFlight = false;
     return false;
   }
+  /*
+   * **先记「是不是在调工具」**，再差分。
+   *
+   * 用户 2026-11-13：口径不变（只算正文+思考），但工具调用期间不要显示 0 —— 那段时间
+   * 模型在流式吐参数，只是我们不把它算进 tok/s（拿不到增量，见 `progress.ts` 的说明）。
+   * 这个标志只驱动胶囊上的文字，**不进速度计**。
+   */
+  entry.toolInFlight = toolCallInFlight(shape.blocks);
   const stream = streamKeyOf(shape.turn, shape.step);
   const previousAt = entry.sampledAt;
   const { pieces, baseline } = newTextSince(entry.baseline, shape.blocks, stream);
@@ -124,6 +142,22 @@ export function pushSnapshot(entry: SessionStream, partial: unknown, at: number)
     entry.history.pushCounts(slice, slice.at);
   }
   return true;
+}
+
+/**
+ * 这一拍该在胶囊上显示哪一种状态。
+ *
+ * 三种情形的判据：
+ * - **有读数**：正文/思考还在流，那就是数字（用户要的主口径）；
+ * - **没读数、但在调工具**：显示「工具调用中」，别显示 0（本会话 52% 的步骤属于这种）；
+ * - 其余：`0 tok/s`（用户明确要求空闲时显示 0，不要消失）。
+ * @param entry - 认领到的状态。
+ * @param rate - `readingOf` 的结果。
+ * @returns 模式。
+ */
+export function modeOf(entry: SessionStream, rate: number): PillMode {
+  if (rate > 0) return "rate";
+  return entry.toolInFlight ? "tool" : "idle";
 }
 
 /**

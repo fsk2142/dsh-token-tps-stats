@@ -70,7 +70,8 @@ import { createElement, useEffect, useState, type ReactElement } from "react";
 
 import { getChartState, setPillElement, subscribeChart, toggleChart, type ChartAnchor } from "./chart-store";
 import { formatRate } from "./format";
-import { claimSessionStream, pushSnapshot, readingOf, releaseSessionStream, type SessionStream } from "./session-store";
+import { pillAriaOf, pillLabelOf, type PillMode } from "./label";
+import { claimSessionStream, modeOf, pushSnapshot, readingOf, releaseSessionStream, type SessionStream } from "./session-store";
 import { TYPO } from "./styles";
 
 export { formatRate };
@@ -223,7 +224,10 @@ export function TpsPill(props: TpsPillProps = {}): unknown {
   }, [useChat]);
 
   const [value, setValue] = useState<number>(() => readingOf(entry, Date.now()));
+  const [mode, setMode] = useState<PillMode>(() => modeOf(entry, readingOf(entry, Date.now())));
   const [expanded, setExpanded] = useState<boolean>(() => getChartState().open);
+  /** 这次渲染要显示的三段文本（数字或「工具调用中」，见 `label.ts`）。 */
+  const label = pillLabelOf(mode, value, formatRate);
 
   /*
    * 会话换了（理论上宿主会给新 key，但这里仍兜一层）：换到新的那份状态，并把旧的还回去。
@@ -241,18 +245,33 @@ export function TpsPill(props: TpsPillProps = {}): unknown {
    * 放在 effect 里而不是渲染中：渲染必须无副作用（StrictMode 下渲染会跑两次）。
    * 差分本身是幂等的 —— 同一份 `partial` 重复推一次，`newTextSince` 看到「文本没变长」
    * 就什么都不产出。
+   *
+   * **即使这一拍没有新字也要刷新**：`pushSnapshot` 顺手记下「是不是在调工具」，
+   * 并且把读数推进一拍（指针回落靠它）。所以这里不看 `pushSnapshot` 的返回值。
+   */
+  /*
+   * 每一拍快照 → 差分 + 摊开 → 速度计与历史。
+   *
+   * 放在 effect 里而不是渲染中：渲染必须无副作用（StrictMode 下渲染会跑两次）。
+   * 差分本身是幂等的 —— 同一份 `partial` 重复推一次，`newTextSince` 看到「文本没变长」
+   * 就什么都不产出。
+   *
+   * **`partial` 为空时也要推**（不要在这里 `return`）：这一步结束（`legacy.partial`
+   * 变 null）时，`pushSnapshot` 顺手把「正在调工具」的标志清掉。漏了这一步，
+   * 工具调用结束后胶囊会一直显示「工具调用中」直到刷新页面。
    */
   useEffect(() => {
-    if (partial === undefined) return;
-    if (!pushSnapshot(entry, partial, Date.now())) return;
-    setValue(readingOf(entry, Date.now()));
+    pushSnapshot(entry, partial, Date.now());
+    const next = readingOf(entry, Date.now());
+    setValue(next);
+    setMode(modeOf(entry, next));
   }, [entry, partial]);
 
   /*
    * 指针回落需要**没有新数据时也继续重算**（每 100ms 一次）；归零就停表。
    *
    * 依赖用 `[entry, active]` 而不是 `[entry, value]`：读出 47→48→49 这种变化时
-   * 定时器不该被拆了重建（那会每 100ms 造一个定时器）。只在「有速度 ↔ 归零」
+   * 定时器不该被拆了重建（那会每 100ms 造一个定时器）。只在「有速度 ↔ 没速度」
    * 这条边界上启停。
    */
   const active = value > 0;
@@ -261,8 +280,7 @@ export function TpsPill(props: TpsPillProps = {}): unknown {
     const timer = setInterval(() => {
       const next = readingOf(entry, Date.now());
       setValue(next);
-      // 到 0 就停表：没有需要动画的数字了，别继续唤醒主线程。
-      if (next === 0) setValue(0);
+      setMode(modeOf(entry, next));
     }, TICK_MS);
     return () => clearInterval(timer);
   }, [entry, active]);
@@ -302,7 +320,7 @@ export function TpsPill(props: TpsPillProps = {}): unknown {
         title: expanded ? "点击收起 TPS 变化曲线" : "点击查看 TPS 变化曲线",
         "aria-expanded": expanded,
         "aria-haspopup": "dialog",
-        "aria-label": `实时输出速度（TPS）：${formatRate(value)} tok/s，点击查看变化曲线`,
+        "aria-label": pillAriaOf(mode, value, formatRate, expanded),
         onClick: (event: { currentTarget: unknown }) => toggleChart(anchorOf(event), entry),
       },
       GaugeIcon(),
@@ -310,24 +328,27 @@ export function TpsPill(props: TpsPillProps = {}): unknown {
        * 文案放在**一个**子节点里（`pill` 的 `gap: 6px` 只该隔开图标与文字；拆成
        * 多个兄弟节点会连字与字之间也插进 6px）。
        *
-       * 里面再拆成「固定前缀 + 定宽数字 + 单位」三段（2026-11-13 用户反馈：
-       * 「速度变化时会不停改变整个胶囊宽度，导致所有胶囊位置变化，能不能固定一个宽度」）。
+       * 三段布局（2026-11-13 用户反馈「速度变化时会不停改变整个胶囊宽度，导致所有
+       * 胶囊位置变化，能不能固定一个宽度」）：前缀 + **定宽的数字** + 单位。
+       * 官方那两个胶囊排在我们右边，我们一变宽它们就跟着被推来推去；所以数字占
+       * 固定 `4ch`（等宽数字下容得下「1000」）并**右对齐**，外框纹丝不动。
        *
-       * 官方那两个胶囊排在我们右边：我们一变宽，它们就跟着被推来推去。
-       * 所以数字占一个**固定字符宽度**（`ch` 单位 + `tabular-nums`，等宽数字下
-       * 4ch 容得下「1000」这种四位数），并**右对齐** —— 数字在框里变化，
-       * 胶囊外框纹丝不动。
+       * 「工具调用中」状态（2026-11-13 用户要求「工具调用时不要显示 0」）**复用同一块**
+       * 位置：拿掉数字与单位、直接把状态词放在那里 —— 宽度与「4ch + ` tok/s`」几乎
+       * 相等，阶段切换时胶囊不会明显伸缩（见 `label.ts`）。
        */
       createElement(
         "span",
         { style: { minWidth: "0", overflow: "hidden", textOverflow: "ellipsis" } },
-        "实时输出速度（TPS）：",
-        createElement(
-          "span",
-          { style: { display: "inline-block", minWidth: "4ch", textAlign: "end" } },
-          formatRate(value),
-        ),
-        " tok/s",
+        label.prefix,
+        label.number === undefined
+          ? null
+          : createElement(
+              "span",
+              { style: { display: "inline-block", minWidth: "4ch", textAlign: "end" } },
+              label.number,
+            ),
+        label.suffix,
       ),
     ),
   );
