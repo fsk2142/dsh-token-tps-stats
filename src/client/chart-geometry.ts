@@ -22,7 +22,14 @@ export interface ChartGeometryOptions {
 export interface ChartGeometry {
   /** 折线 path 的 `d`。 */
   readonly line: string;
-  /** 折线下方的填充 path 的 `d`（闭合到基线）。 */
+  /**
+   * 折线下方的填充 path（闭合到基线）。
+   *
+   * **当前不再使用**（2026-11-12：本主题的 `brand-primary` 是近黑色，12% 叠在白卡片
+   * 上就是一片灰，用户明确要求「折线图里不要灰色的底」）。仍然算出来是因为它是纯几何、
+   * 不额外读状态：将来若换成浅色强调色（或换主题令牌），上层可以直接拿来用，不必
+   * 回头改这一层。
+   */
   readonly area: string;
   /** 每个点的像素坐标（最旧 → 最新），画节点/标记用。 */
   readonly points: readonly { readonly x: number; readonly y: number }[];
