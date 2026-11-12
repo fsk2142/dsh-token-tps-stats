@@ -1,5 +1,5 @@
 /**
- * **实时 tok/s 的计数核心**（2026-11-12，第 2 步）。
+ * **实时 tok/s 的计数核心**（2026-11-12，第 2 步；第 3 步加 3 秒缓冲与防冲高）。
  *
  * 这个文件**不碰 React、不碰宿主** —— 纯函数 + 一个有状态的累加器，可以完整单测。
  *
@@ -17,17 +17,47 @@
  * [token-metrics](https://socket.dev/npm/package/token-metrics) 与
  * [Qwen 的 estimate_token_counter](https://github.com/rayrayraykk/CoPaw/blob/86fda39f95d5557b60952c85c1a25923e9c8f918/src/qwenpaw/agents/utils/estimate_token_counter.py)。
  *
- * ## 读数语义：1 秒窗口 + 3 窗口平均 + **指针回落**
+ * ## 读数语义：1 秒窗口 × 9 窗口，再套一层 3 秒的低通
  *
- * 用户选的口径是 B（1 秒窗口 + 多窗口平均），并明确要求「像汽车速度表一样逐渐降低为 0」。
+ * ```
+ * 帧 → 毫秒桶 → 最近 9 秒的平均速度（目标值）→ 3 秒低通 → 显示值
+ * ```
  *
- * 所以 `reading(at)` 分两种情况：
+ * ### 第一层：最近 9 秒的平均（`TPS_WINDOWS × TPS_WINDOW_MS`）
  *
- * - **窗口里有数据** → 返回分窗平均值（稳定但不迟钝）；
- * - **窗口里没有数据**（模型停顿、或这一轮已结束）→ 从**最后一次读数**开始按指数衰减，
- *   松手后指针平滑滑回 0，低于显示阈值就返回 `undefined`（组件据此隐藏）。
+ * 用户早先明确要求「至少 9 个窗口」：3 个窗口覆盖 3 秒，帧级抖动压不住，
+ * 数字会来回跳。9 个窗口覆盖 9 秒，稳得多。
  *
- * 而不是「一停就归零」或「一停就消失」—— 那不像仪表，像开关。
+ * ### 第二层：3 秒缓冲（`TPS_FOLLOW_MS`）
+ *
+ * 用户读数后提的是：「变化速度上升太快了，下降也太快了，能不能做一个 3 秒的缓冲」。
+ * 目标值本身仍然可能阶跃（例如宿主一次吐出很大一段），所以再加一层一阶低通：
+ *
+ * ```
+ * 显示值 += (目标值 - 显示值) * (1 - e^(-dt/τ)),  τ = 3s
+ * ```
+ *
+ * 即「瞬时速度很高，但指针要慢慢爬上去、慢慢降下来」。
+ *
+ * 每次 `reading()` 最多只消化 `TPS_FOLLOW_MAX_STEP_MS`（1 秒）的时间差：
+ * 空闲时组件会停表，帧突然回来时 `dt` 可能有好几秒；不设上限的话低通一步就跳到
+ * 目标值附近，等于白做缓冲。
+ *
+ * ### 停机：指针按 3 秒指数衰减
+ *
+ * 超过 `TPS_IDLE_GRACE_MS` 没有新帧 → 不再用分窗平均，改从**当前显示值**按
+ * `TPS_DECAY_MS`（已从 700ms 改成 3s，与用户要的「慢慢降低」对齐）衰减，
+ * 低于 `TPS_ZERO_THRESHOLD` 返回 `undefined`（组件据此停表，显示 0）。
+ *
+ * ## 为什么分母固定是 9（2026-11-12 修「偶尔冲到 300 多」）
+ *
+ * 旧实现只在「最近 9 个窗口里**已经有数据**」之后才把窗口计入分母
+ *（`if (!anyData) continue;`），于是**停顿之后突然来一大段**时，只有最近那 1 个
+ * 窗口进分母 —— 一段 1200 字符（≈286 token）就被读成 **286 tok/s**，正是用户看到的
+ * 「冲到 300 多，完全不真实」。
+ *
+ * 现在只要最近 9 秒里有任何数据，**分母固定 9**、空窗口按 0 计入：
+ * 那一段 1200 字符读成 286/9 ≈ 32 tok/s，是「最近 9 秒的平均」应有的值。
  *
  * @module dsh-token-tps-stats/src/client/tps-meter
  */
@@ -66,10 +96,30 @@ export const TPS_IDLE_GRACE_MS = 800;
 /**
  * 指针回落的**时间常数**（毫秒）。
  *
- * 指数衰减 `e^(-t/τ)`：τ = 700ms 时，约 0.7s 掉到 37%、1.6s 掉到 10%、
- * 2.3s 掉到 4% —— 手感接近汽车速度表松油门的那段指针回落。
+ * 指数衰减 `e^(-t/τ)`：τ = 3s 时，约 3s 掉到 37%、6s 掉到 14%、10s 掉到 4%。
+ *
+ * ## 为什么从 700ms 改成 3s（2026-11-12 用户反馈「下降也太快了」）
+ *
+ * 原值 700ms 是「像汽车松油门」的直觉，但实测读数看起来是**啪一下掉下去**；
+ * 用户要求与上升一样有 3 秒缓冲 —— 所以改成 3s，与 {@link TPS_FOLLOW_MS} 同量级。
  */
-export const TPS_DECAY_MS = 700;
+export const TPS_DECAY_MS = 3_000;
+
+/**
+ * 上升/追踪的**时间常数**（毫秒）：用户要的「3 秒缓冲」。
+ *
+ * 一阶低通：阶跃后 3s 到 63%、6s 到 86%、9s 到 95%。配合 9 秒分窗平均，
+ * 从 0 爬到真实速度大约要 6~10 秒 —— 这正是用户要的「慢慢爬上去」。
+ */
+export const TPS_FOLLOW_MS = 3_000;
+
+/**
+ * 单次 `reading()` 最多消化的时间差（毫秒）。
+ *
+ * 空闲时组件会停表（值归零后没有定时器），帧突然回来时距上次读数可能过了好几秒。
+ * 不设上限，低通一步就吃掉整个时间差、直接跳到目标值 —— 缓冲等于没做。
+ */
+const TPS_FOLLOW_MAX_STEP_MS = 1_000;
 
 /**
  * 低于这个值就认为「已经停了」，返回 `undefined` 让组件隐藏。
@@ -149,6 +199,33 @@ export function decayed(last: number, elapsedMs: number, decayMs: number, thresh
 }
 
 /**
+ * 一阶低通的**一步**（纯函数）。
+ *
+ * `previous === undefined` 表示「还没有显示值」：从 **0** 起步，而不是直接取目标值。
+ * 这样插件在流式进行中挂载时，指针也是从 0 慢慢爬上去 —— 与用户要的观感一致。
+ * @param previous - 上一步的显示值与它的时刻。
+ * @param target - 目标值（最近 9 秒的平均）。
+ * @param at - 现在（毫秒）。
+ * @param followMs - 时间常数（毫秒）。
+ * @param maxStepMs - 单步最多消化的时间差（毫秒）。
+ * @returns 新的显示值与时刻。
+ */
+function followToward(
+  previous: { value: number; at: number } | undefined,
+  target: number,
+  at: number,
+  followMs: number,
+  maxStepMs: number,
+): { value: number; at: number } {
+  if (previous === undefined) return { value: 0, at };
+  const elapsed = at - previous.at;
+  if (elapsed <= 0) return { value: previous.value, at: previous.at };
+  const step = Math.min(elapsed, maxStepMs);
+  const factor = followMs > 0 ? 1 - Math.exp(-step / followMs) : 1;
+  return { value: previous.value + (target - previous.value) * factor, at };
+}
+
+/**
  * 实时速度计。
  *
  * 用法：每收到一帧就 `push(text, now)`，需要显示时调 `reading(now)`。
@@ -169,13 +246,22 @@ export interface TpsMeter {
 
 /**
  * 造一个速度计。
- * @param options - `windowMs` / `windows` / `decayMs` 可注入（测试用），缺省见常量。
+ * @param options - `windowMs` / `windows` / `decayMs` / `idleGraceMs` / `followMs` 可注入（测试用）。
  * @returns 速度计。
  */
-export function createTpsMeter(options: { windowMs?: number; windows?: number; decayMs?: number; idleGraceMs?: number } = {}): TpsMeter {
+export function createTpsMeter(
+  options: {
+    windowMs?: number;
+    windows?: number;
+    decayMs?: number;
+    idleGraceMs?: number;
+    followMs?: number;
+  } = {},
+): TpsMeter {
   const windowMs = options.windowMs ?? TPS_WINDOW_MS;
   const windows = options.windows ?? TPS_WINDOWS;
   const decayMs = options.decayMs ?? TPS_DECAY_MS;
+  const followMs = options.followMs ?? TPS_FOLLOW_MS;
   /**
    * 空闲宽限（毫秒）：超过它才认为「已经停了」，改走指针衰减。
    *
@@ -189,8 +275,15 @@ export function createTpsMeter(options: { windowMs?: number; windows?: number; d
   const buckets = new Map<number, { cjk: number; other: number }>();
   /** 本轮是否已结束（结束后不再计入新帧，但读数仍可用）。 */
   let settled = false;
-  /** 最后一次算出来的有效读数（指针回落的起点）。 */
+  /** 最后一次算出来的**目标**读数（指针回落的起点兜底）。 */
   let lastRate: { value: number; at: number } | undefined;
+  /**
+   * 3 秒低通之后的**显示值**（用户真正看到的数字）。
+   *
+   * 与 `lastRate` 分开：`lastRate` 是「最近 9 秒的平均」，是低通的输入；
+   * 显示值是低通的输出。停机衰减从显示值开始，否则指针会先跳回目标值再衰减。
+   */
+  let displayed: { value: number; at: number } | undefined;
 
   /** 丢掉落出保留期的桶。 */
   const prune = (at: number): void => {
@@ -201,24 +294,21 @@ export function createTpsMeter(options: { windowMs?: number; windows?: number; d
   };
 
   /**
-   * 按窗口算分窗平均。
+   * 最近 `windows` 个窗口的平均速度（**分母固定为 `windows`**）。
    *
-   * ## 空窗要不要参与平均（2026-11-12 改）
+   * ## 空窗要不要参与平均（2026-11-12 改过两次）
    *
-   * 第一版是「**空窗不参与**」：只要有窗口收到字就只对非空窗口求平均。
-   * 那样在「稳定输出」时很准，但在**9 个窗口**下会出问题 ——
-   * 用户明确说 3 个不够、要 9 个，而 9 窗口的意义就是「对最近 9 秒做平均」。
-   * 如果仍然跳过空窗，那么**停顿 5 秒后重启输出**时，读数会拿「2 个非空窗口」求平均，
-   * 得到接近瞬时速度的高值 —— 那等于把 9 窗口的平滑作用抵消掉了。
+   * 第一版「空窗不参与」：只对非空窗口求平均。9 窗口下这会把「停顿后重启」读成
+   * 接近瞬时速度的高值 —— 等于把平滑抵消掉。
    *
-   * 现在：**一旦窗口里还有数据，就把空窗按 0 计入平均**。
-   * 这正是「最近 9 秒的平均速度」，停下来时数字会自然往下走，
-   * 与用户要的「像速度表一样逐渐降低」是同一件事的两面。
+   * 第二版「一旦有过数据就把空窗按 0 计入，但分母只数**已经有数据之后**的窗口」：
+   * 稳定输出时正确，但**停顿后突然来一大段**时，分母只剩最近那 1 个窗口 ——
+   * 1200 字符（≈286 token）被读成 286 tok/s，就是用户报的「冲到 300 多」。
    *
-   * 唯一的例外是**完全空闲**（用 {@link TPS_IDLE_GRACE_MS} 判断）：
-   * 那时不再用分窗平均（它会僵在高位好几种钟），改由指针衰减。
+   * 现在第三版：**只要最近 9 秒里有任何数据，分母固定 `windows`**，空窗按 0。
+   * 那一段 1200 字符读成 286/9 ≈ 32 tok/s，这才是「最近 9 秒的平均」。
    * @param at - 现在（毫秒）。
-   * @returns 估算 tok/s；窗口里完全没有数据时 `undefined`。
+   * @returns 估算 tok/s；最近一帧已超出宽限（判定为停）或完全没有数据时 `undefined`。
    */
   const windowedRate = (at: number): number | undefined => {
     /** 最近一次收到帧的时刻（判断是否还在流）。 */
@@ -233,7 +323,6 @@ export function createTpsMeter(options: { windowMs?: number; windows?: number; d
     if (settled || latest === undefined || at - latest > idleGraceMs) return undefined;
 
     let sum = 0;
-    let used = 0;
     let anyData = false;
     for (let index = 0; index < windows; index += 1) {
       const from = at - (index + 1) * windowMs;
@@ -255,16 +344,11 @@ export function createTpsMeter(options: { windowMs?: number; windows?: number; d
       }
       const windowed = tokensOf({ cjk, other });
       if (windowed > 0) anyData = true;
-      /*
-       * **不再跳过空窗**：一旦这段时间里有过输出，空窗就按 0 计入。
-       * 这才是「最近 N 秒的平均速度」；跳过空窗会系统性高估（详见本方法顶部说明）。
-       */
-      if (!anyData) continue;
+      // **空窗按 0 计入**（累加 0 只是为了让分母保持固定）。
       sum += (windowed / windowMs) * 1_000;
-      used += 1;
     }
-    if (!anyData || used === 0) return undefined;
-    return sum / used;
+    if (!anyData) return undefined;
+    return sum / windows;
   };
 
   return {
@@ -283,19 +367,26 @@ export function createTpsMeter(options: { windowMs?: number; windows?: number; d
     },
     reading: (at) => {
       prune(at);
-      const rate = windowedRate(at);
-      if (rate !== undefined) {
-        lastRate = { value: rate, at };
-        return rate;
+      const target = windowedRate(at);
+      if (target !== undefined) {
+        lastRate = { value: target, at };
+        displayed = followToward(displayed, target, at, followMs, TPS_FOLLOW_MAX_STEP_MS);
+        return displayed.value;
       }
       /*
        * 窗口里没数据：**指针回落**而不是立刻归零/立刻消失。
        *
-       * 用户的说法是「像汽车速度表一样逐渐降低为 0」—— 松油门后指针平滑滑回，
-       * 而不是啪一下掉到 0。所以这里从最后一次读数按指数衰减。
+       * 用户的说法是「像汽车速度表一样逐渐降低为 0」；后来又要求下降也别太快
+       *（3 秒缓冲），所以时间常数已从 700ms 改成 3s。这里从**显示值**衰减，
+       * 而不是从目标值 —— 否则指针会先跳回目标再慢慢掉，看起来更奇怪。
        */
-      if (lastRate === undefined) return undefined;
-      return decayed(lastRate.value, at - lastRate.at, decayMs, TPS_ZERO_THRESHOLD);
+      if (displayed === undefined) {
+        if (lastRate === undefined) return undefined;
+        displayed = { value: lastRate.value, at: lastRate.at };
+      }
+      const remaining = decayed(displayed.value, at - displayed.at, decayMs, TPS_ZERO_THRESHOLD);
+      displayed = { value: remaining ?? 0, at };
+      return remaining;
     },
     settle: () => {
       settled = true;

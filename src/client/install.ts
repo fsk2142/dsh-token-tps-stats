@@ -36,6 +36,7 @@
  * @module dsh-token-tps-stats/src/client/tps-probe
  */
 
+import { TpsChart } from "./tps-chart";
 import { pushLiveChunk, TpsPill } from "./tps-pill";
 
 /** 探针需要的客户端上下文面（只用 `inject`，不碰别的服务）。 */
@@ -57,6 +58,15 @@ interface SlotsLike {
 let pillDispose: (() => void) | undefined;
 
 /**
+ * 折线图弹层的注销句柄。
+ *
+ * 弹层挂在**另一个槽位**（`shell.overlay`），它的声明与 dock 的生命周期不一定
+ * 同步（例如窗口宽度变化时 dock 可能重注册）—— 所以两份句柄分开存，各自可撤、
+ * 互不牵连。
+ */
+let chartDispose: (() => void) | undefined;
+
+/**
  * 撤销显示胶囊。
  *
  * 只在**注册成功过**时才需要调；拿不到句柄时是空操作。
@@ -73,6 +83,23 @@ function disposePill(): void {
 }
 
 /**
+ * 撤销折线图弹层。
+ *
+ * 与 {@link disposePill} 同一套「拿不到句柄就是空操作」的处理：弹层注册失败
+ * 只该损失弹层，**不该**连带把胶囊也撤掉。
+ */
+function disposeChart(): void {
+  const off = chartDispose;
+  chartDispose = undefined;
+  if (typeof off !== "function") return;
+  try {
+    off();
+  } catch (error: unknown) {
+    console.error("[dsh-token-tps-stats] tps chart: dispose failed:", error);
+  }
+}
+
+/**
  * 释放本次注册产生的一切（事件定义 + 显示胶囊）。
  *
  * 各个早退分支都返回它 —— 否则「事件拿到了但显示没挂上」那种半成品状态会留下
@@ -80,6 +107,7 @@ function disposePill(): void {
  * @returns 注销函数（可重复调用）。
  */
 function releaseAll(): void {
+  disposeChart();
   disposePill();
 }
 
@@ -198,6 +226,21 @@ export function installTpsPill(ctx: TpsPluginContext): void {
             console.debug("[dsh-token-tps-stats] tps pill: registered into conversation.composer.dock (order -1)");
           } catch (error: unknown) {
             console.error("[dsh-token-tps-stats] tps pill: slot registration failed:", error);
+          }
+          /*
+           * 折线图弹层挂在 `shell.overlay`（横贯整帧的浮层），**单独 try/catch**：
+           * dock 里有胶囊就够了，`shell.overlay` 在某些窗口形态下可能不声明，
+           * 那种时候只该没有弹层，不该连胶囊一起消失。
+           */
+          try {
+            const off = slots.register(
+              { name: "shell.overlay", id: "token-tps-stats-chart" },
+              TpsChart,
+            );
+            chartDispose = typeof off === "function" ? (off as () => void) : undefined;
+            console.debug("[dsh-token-tps-stats] tps chart: registered into shell.overlay");
+          } catch (error: unknown) {
+            console.error("[dsh-token-tps-stats] tps chart: slot registration failed:", error);
           }
         } else {
           console.debug("[dsh-token-tps-stats] tps pill: slots.register is unavailable, skipped");

@@ -1,5 +1,5 @@
 /**
- * **实时 tok/s 的显示**（2026-11-12，第 2 步）。
+ * **实时 tok/s 的显示**（2026-11-12，第 2 步；第 3 步加「可点击」）。
  *
  * ## 放在哪
  *
@@ -40,15 +40,53 @@
  * 这样空闲时不会留一个每秒唤醒 10 次的主线程定时器（上一版就是那样，还伴随
  * 控制台的 `Forced reflow` 警告）。
  *
+ * ## 第 3 步：点击打开折线图
+ *
+ * 用户新要求：「这个胶囊可以点击，点击的时候显示一段折线图，反映一段时间内 tps 的变化」。
+ *
+ * 实现上分三块，各自独立可测：
+ * - 本文件：胶囊本体（按钮语义 + 点击时把**自己的屏幕矩形**交给状态仓库）；
+ * - `chart-store.ts`：模块级开关（胶囊和弹层不共享 React 树，只能这样交换数据）；
+ * - `tps-chart.ts`：画在 `shell.overlay` 上的弹层（折线图 + 时长切换）。
+ *
+ * 点胶囊时读的是**自己**的 `getBoundingClientRect()` —— 不是去读旁边官方胶囊的 DOM
+ * 来「猜」排版。宿主允许读自己元素的矩形，弹层据此摆在胶囊正上方。
+ *
  * @module dsh-token-tps-stats/src/client/tps-pill
  */
 
 import { createElement, useEffect, useState, type ReactElement } from "react";
 
+import { getChartState, setPillElement, subscribeChart, toggleChart, type ChartAnchor } from "./chart-store";
+import { formatRate } from "./format";
+import { TYPO } from "./styles";
+import { pushHistory } from "./tps-history";
 import { createTpsMeter } from "./tps-meter";
+
+export { formatRate };
 
 /** 重渲染间隔（毫秒）：100ms 足够顺滑，又不至于像 60fps 那样白烧。 */
 const TICK_MS = 100;
+
+/** 胶囊的标记属性（弹层用它判断「点的是不是胶囊」）。 */
+const PILL_ATTRIBUTE = "data-token-tps-pill";
+
+/**
+ * 登记胶囊元素进状态仓库（`ref` 回调）。
+ *
+ * 必须是**模块级常量**：写在内联箭头函数里，每次渲染都是新引用，
+ * React 会先 `ref(null)` 再 `ref(node)` —— 中间那一瞬仓库里是空引用，
+ * 弹层若正好在这一帧重画，位置就丢了。
+ * @param element - React 给的 DOM 元素；卸载时是 `null`。
+ */
+function registerPillElement(element: unknown): void {
+  if (element === null || element === undefined) {
+    setPillElement(undefined);
+    return;
+  }
+  const candidate = element as { getBoundingClientRect?: () => ChartAnchor };
+  setPillElement(typeof candidate.getBoundingClientRect === "function" ? candidate as { getBoundingClientRect(): ChartAnchor } : undefined);
+}
 
 /** 速度计的最小面（便于测试注入替身）。 */
 export interface TpsMeterLike {
@@ -91,6 +129,21 @@ function notify(): void {
 }
 
 /**
+ * 订阅「有新帧到达 / 读数刷新」。
+ *
+ * 胶囊自己用它触发重渲染；折线图弹层也用它 —— 打开时曲线要跟着新帧长出来，
+ * 不必等它自己的 500ms 定时器。
+ * @param listener - 回调。
+ * @returns 取消订阅。
+ */
+export function subscribeLive(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+/**
  * 推进一帧（由事件定义调用）。
  * @param chunk - 流式 chunk（含 `type` 与 `text`）。
  * @param meta - 该帧所属的 turn/step（当前不参与计算，见下）。
@@ -108,6 +161,13 @@ export function pushLiveChunk(chunk: unknown, meta: { turn?: unknown; step?: unk
   const text = (chunk as { text?: unknown }).text;
   if (typeof text !== "string" || text === "") return;
   ensureMeter().push(text, at);
+  /*
+   * 同一批文本**也**喂给折线图的历史（按秒聚合原始字符）。
+   *
+   * 两套累加器而不是一套：速度计只保留 9 秒（那是胶囊需要的跨度），折线图要 3 分钟。
+   * 让速度计同时承担两种跨度，会把那个已经稳定的计算核心搅浑。
+   */
+  pushHistory(text, at);
   notify();
 }
 
@@ -129,19 +189,6 @@ export function readingAt(at: number): number {
   return typeof reading === "number" && Number.isFinite(reading) && reading > 0 ? reading : 0;
 }
 
-/**
- * 把数值格式化成显示文本。
- *
- * ≥10 取整、<10 保留一位（与官方 `formatTokensPerSecond` 同一口径）。
- * @param value - tok/s。
- * @returns 显示文本。
- */
-export function formatRate(value: number): string {
-  const clamped = Math.max(0, value);
-  if (clamped === 0) return "0";
-  return clamped >= 10 ? String(Math.round(clamped)) : String(Math.round(clamped * 10) / 10);
-}
-
 /** 与官方 `.pill` 逐条对齐的内联样式（理由见文件头）。 */
 const PILL_STYLE = {
   boxSizing: "border-box",
@@ -158,13 +205,16 @@ const PILL_STYLE = {
   gap: "6px",
   padding: "1px 8px",
   display: "inline-flex",
+  // 第 3 步：可点击。光标是唯一不需要 hover 样式也能读懂的提示。
+  cursor: "pointer",
 } as const;
 
-/** 与官方 `.anchor` 对齐的外壳样式（字号与行高在这里）。 */
+/** 与官方 `.anchor` 对齐的外壳样式（字号与行高来自共享排版，理由见 `styles.ts`）。 */
 const ANCHOR_STYLE = {
   minWidth: "0",
-  fontSize: "calc(var(--dsh-content-font-size-secondary, 13px) - 1px)",
-  lineHeight: "calc(20px + var(--dsh-content-font-delta-secondary, 0px))",
+  fontFamily: TYPO.fontFamily,
+  fontSize: TYPO.fontSize,
+  lineHeight: TYPO.lineHeight,
   display: "inline-flex",
 } as const;
 
@@ -217,11 +267,12 @@ function GaugeIcon(): ReactElement {
 }
 
 /**
- * 实时速度胶囊。**始终渲染**（空闲时显示 `0 tok/s`）。
+ * 实时速度胶囊。**始终渲染**（空闲时显示 `0 tok/s`），点击打开折线图。
  * @returns 元素。
  */
 export function TpsPill(): unknown {
   const [value, setValue] = useState<number>(() => readingAt(Date.now()));
+  const [expanded, setExpanded] = useState<boolean>(() => getChartState().open);
 
   useEffect(() => {
     /** 当前运行中的定时器（归零后停、新帧到达再启）。 */
@@ -248,20 +299,50 @@ export function TpsPill(): unknown {
     };
     listeners.add(listener);
     if (readingAt(Date.now()) > 0) start();
+    const offChart = subscribeChart(() => setExpanded(getChartState().open));
     return () => {
       listeners.delete(listener);
+      offChart();
       stop();
     };
   }, []);
+
+  /**
+   * 胶囊自己的屏幕矩形（作为弹层的锚点）。
+   *
+   * 鸭子类型而不是 `instanceof Element`：理由见 `dom.d.ts` —— 只为一次取值引入
+   * 一整套 DOM 类型不划算。宿主页面里的真实元素一定带 `getBoundingClientRect`。
+   * @param event - 点击事件。
+   * @returns 矩形；拿不到时 `undefined`（弹层退回贴左下角）。
+   */
+  const anchorOf = (event: { currentTarget: unknown }): ChartAnchor | undefined => {
+    const element = event.currentTarget as { getBoundingClientRect?: () => ChartAnchor } | null;
+    if (typeof element?.getBoundingClientRect !== "function") return undefined;
+    const rect = element.getBoundingClientRect();
+    return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+  };
 
   return createElement(
     "span",
     { "data-composer-stat": "llm-account-tps", style: ANCHOR_STYLE },
     createElement(
-      "span",
+      "button",
       {
+        type: "button",
+        [PILL_ATTRIBUTE]: "",
+        /*
+         * 登记自己的 DOM 元素：弹层开着时用户滚动/拖窗口，胶囊位置会变，
+         * 弹层每次重画都读一次**当前**矩形，跟着胶囊走而不是钉在旧位置。
+         * 用模块级常量回调，避免每次渲染都换一个函数引用（那会让 React
+         * 每次先 `ref(null)` 再 `ref(node)`）。
+         */
+        ref: registerPillElement,
         style: PILL_STYLE,
-        "aria-label": `实时输出速度（TPS）：${formatRate(value)} tok/s`,
+        title: expanded ? "点击收起 TPS 变化曲线" : "点击查看 TPS 变化曲线",
+        "aria-expanded": expanded,
+        "aria-haspopup": "dialog",
+        "aria-label": `实时输出速度（TPS）：${formatRate(value)} tok/s，点击查看变化曲线`,
+        onClick: (event: { currentTarget: unknown }) => toggleChart(anchorOf(event)),
       },
       GaugeIcon(),
       createElement(
