@@ -56,6 +56,7 @@
 | 折线图画在哪 | **不能**画在 dock 里（那里会滚动/被裁剪，胶囊只有 20px 高）。注册进 `shell.overlay`（宿主的「横贯整帧的浮层」），`position: fixed` |
 | 「灰色底，希望能像官方胶囊一样用白色底」 | 之前用的 `--dsw-alias-bg-overlay` 是**半透明**色 → 叠在内容上必然发灰。改成 `--dsw-alias-bg-base`（浅色 = 白），配 `--dsw-elevation-prominent` 阴影 |
 | 「字体也要保持一致」 | 新增 `styles.ts`，胶囊与弹层**共用** `--dsh-content-font-size-secondary` / `--dsh-content-font-delta-secondary` 那套变量，不再写死 12px |
+| 「折线颜色，还有其他文字的字体颜色，和官方那个保持一致」 | 折线、标题、副标题、刻度、轴标签**全部**改用 `INK` = `--dsw-alias-label-tertiary`（就是官方 `.pill` 那一条 `color:`）；标题去掉 `font-weight: 600`。唯一例外是**选中的时长按钮**用 `label-secondary`（不选就分不出选了哪个） |
 | 「变化速度上升太快、下降也太快，做个 3 秒缓冲」 | `tps-meter` 加一层**一阶低通**（τ = `TPS_FOLLOW_MS` = 3s）；衰减常数 `TPS_DECAY_MS` 从 700ms 改成 3s，并且从**显示值**衰减 |
 | 「偶尔冲到峰值 300 多，完全不真实」 | 根因：旧实现只把「已经有数据的窗口」计入分母，停顿后突然一大段时相当于单窗口求平均 → 1200 字符≈286 token 直接读成 286。现在**分母固定 9**、空窗按 0，同样一段读成 ≈32 |
 
@@ -259,7 +260,8 @@ pnpm typecheck && pnpm test && pnpm build
 | 点了没反应 | 控制台有没有 `tps chart: registered`；没有就是 `shell.overlay` 没挂上 |
 | 弹层灰色底 | `SURFACE.background` 是不是又被改回 `--dsw-alias-bg-overlay` |
 | **折线图区域是灰的，但卡片是白的** | 曲线下方是不是又铺了面积填充（`color-mix(brand-primary 12%)`）—— 本主题的 brand-primary 是**近黑色**，12% 近黑叠在白卡片上就是一片灰。2026-11-12 已去掉该填充，只画线 |
-| 弹层字与胶囊不一致 | 弹层是不是又写死了 `fontSize: 12px`（应走 `TYPO`） |
+| 弹层字与胶囊不一致 | 弹层是不是又写死了 `fontSize: 12px` 或 `fontWeight: 600`（应走 `TYPO` / `INK`，标题与正文同级） |
+| 折线比旁边胶囊黑一档 | 折线是不是又用了 `ACCENT`/`brand-primary`（应为 `INK` = `label-tertiary`） |
 | 点胶囊后弹层闪烁/开不动 | `pointerdown` 里是不是漏了放过 `PILL_ATTRIBUTE` |
 | 弹层位置飘 | `readPillRect()` 是否仍在每次重画时调用；`ref` 回调是否仍是模块级常量 |
 | 数字始终 0 | 检查 `arrivalTime` 是否被改回 `event.time`；检查 `role` 判定是否被改回 `chars===0` |

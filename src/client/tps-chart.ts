@@ -44,7 +44,7 @@ import { axisTicks, buildGeometry, niceMax } from "./chart-geometry";
 import { closeChart, getChartState, readPillRect, setChartSeconds, subscribeChart, type ChartAnchor } from "./chart-store";
 import type { DshEvent } from "./dom";
 import { formatRate } from "./format";
-import { ACCENT, HAIRLINE, MUTED, SURFACE, TYPO } from "./styles";
+import { HAIRLINE, INK, INK_STRONG, SURFACE, TYPO } from "./styles";
 import { historySeries, historySummary, TPS_CHART_RANGES, type TpsChartRange } from "./tps-history";
 
 /** 弹层宽度（像素）。 */
@@ -147,16 +147,21 @@ function insideAttribute(target: unknown, attribute: string): boolean {
   return false;
 }
 
-/** 分段按钮的样式（选中态用品牌色，与宿主的 segmented control 同观感）。 */
+/**
+ * 分段按钮的样式：**选中态**比未选中深一档（否则看不出当前选的是哪个）。
+ *
+ * 除选中态那一点视觉重量外，按钮与弹层其它文字同色 —— 用户要求「和官方那个
+ * 字体颜色保持一致」，所以这里不引入品牌色蓝。
+ */
 function rangeButtonStyle(active: boolean): Record<string, string | number> {
   return {
-    border: `1px solid ${active ? ACCENT : HAIRLINE}`,
+    border: `1px solid ${active ? INK_STRONG : HAIRLINE}`,
     background: "transparent",
-    color: active ? ACCENT : MUTED,
+    color: active ? INK_STRONG : INK,
     borderRadius: "6px",
     padding: "0 8px",
     height: "22px",
-    fontFamily: "inherit",
+    fontFamily: TYPO.fontFamily,
     fontSize: "11px",
     lineHeight: "20px",
     cursor: "pointer",
@@ -301,9 +306,14 @@ function renderHeader(seconds: TpsChartRange, latest: number, average: number, p
         "span",
         {
           style: {
-            fontWeight: 600,
-            fontSize: "13px",
-            lineHeight: "18px",
+            /*
+             * 标题**不再加粗**、也不再用 13px：用户要求「其它文字的字体也和官方
+             * 那个保持一致」。官方胶囊正文是 12px / `label-tertiary` / 常规字重，
+             * 这里跟它一致 —— 弹层的标题只是「第一行字」，不是另一种层级。
+             */
+            fontSize: "12px",
+            lineHeight: "17px",
+            color: INK,
             whiteSpace: "nowrap",
             overflow: "hidden",
             textOverflow: "ellipsis",
@@ -313,7 +323,7 @@ function renderHeader(seconds: TpsChartRange, latest: number, average: number, p
       ),
       createElement(
         "span",
-        { style: { color: MUTED, fontSize: "11px", lineHeight: "16px", whiteSpace: "nowrap" } },
+        { style: { color: INK, fontSize: "11px", lineHeight: "16px", whiteSpace: "nowrap" } },
         `当前 ${formatRate(latest)} tok/s · 平均 ${formatRate(average)} · 峰值 ${formatRate(peak)}`,
       ),
     ),
@@ -327,7 +337,7 @@ function renderHeader(seconds: TpsChartRange, latest: number, average: number, p
           flex: "none",
           border: "none",
           background: "transparent",
-          color: MUTED,
+          color: INK,
           fontFamily: "inherit",
           fontSize: "15px",
           lineHeight: "18px",
@@ -350,6 +360,10 @@ interface ChartViewOptions {
 
 /**
  * 折线图本体（SVG + 空态提示）。
+ *
+ * 折线、端点、刻度、轴标签**全部用同一个 `INK`**（= 官方胶囊的 `label-tertiary`）：
+ * 用户 2026-11-12 的原话是「折线颜色，还有其他文字的字体颜色，和官方那个保持一致」。
+ * 之前折线用 `brand-primary`（近黑）、刻度用 `label-secondary`，弹层整体比旁边胶囊黑一档。
  * @param options - 几何 + 状态。
  * @returns 元素。
  */
@@ -380,7 +394,7 @@ function renderChart(options: ChartViewOptions): ReactElement {
         y,
         textAnchor: "end",
         fontSize: 10,
-        fill: MUTED,
+        fill: INK,
         style: { fontVariantNumeric: "tabular-nums" },
       },
       formatRate(tick),
@@ -423,13 +437,13 @@ function renderChart(options: ChartViewOptions): ReactElement {
             createElement("path", {
               d: geometry.line,
               fill: "none",
-              stroke: ACCENT,
+              stroke: INK,
               strokeWidth: 1.5,
               strokeLinejoin: "round",
             }),
             last === undefined
               ? null
-              : createElement("circle", { cx: last.x, cy: last.y, r: 2.5, fill: ACCENT }),
+              : createElement("circle", { cx: last.x, cy: last.y, r: 2.5, fill: INK }),
           ),
       createElement(
         "text",
@@ -438,7 +452,7 @@ function renderChart(options: ChartViewOptions): ReactElement {
           y: SVG_HEIGHT - 2,
           fontSize: 10,
           textAnchor: "start",
-          fill: MUTED,
+          fill: INK,
         },
         `${seconds} 秒前`,
       ),
@@ -449,7 +463,7 @@ function renderChart(options: ChartViewOptions): ReactElement {
           y: SVG_HEIGHT - 2,
           fontSize: 10,
           textAnchor: "end",
-          fill: MUTED,
+          fill: INK,
         },
         "现在",
       ),
@@ -463,7 +477,7 @@ function renderChart(options: ChartViewOptions): ReactElement {
               left: `${((PLOT_LEFT + PLOT_WIDTH / 2) / SVG_WIDTH) * 100}%`,
               top: `${((PLOT_TOP + PLOT_HEIGHT / 2) / SVG_HEIGHT) * 100}%`,
               transform: "translate(-50%, -50%)",
-              color: MUTED,
+              color: INK,
               fontSize: "11px",
               whiteSpace: "nowrap",
               pointerEvents: "none",
