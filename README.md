@@ -43,6 +43,12 @@
 从槽位标准属性里读**当前这个会话**的聊天快照 —— `useChat(snapshot => snapshot.legacy.partial)`
 给出的正是「这一步正在生成的文本」，官方那两个胶囊（轮次/步数、用量）读的是同一份快照。
 
+两个槽位都用 `slots.inject(name, cb)` **等声明**再注册，而不是拿到 `slots` 就立刻
+`register`：槽位声明由声明方条目在自己生命周期里建立，窗口形态变化、条目重挂时还会
+撤掉重建 —— 直接注册赌的是「激活这一刻声明已经在了」，重启后批次顺序一变就会报
+`slot "…" is not declared (a parent entry's children table must declare it)`，
+胶囊整个消失。`slots.inject` 会在声明提交后回调、在声明重建时再跑一次（先执行上次的清理）。
+
 不再监听 `assistant/live-chunk`：那张事件注册表是**全局**的，每个会话都会把同一个
 Definition 拿去匹配自己那份事件流 —— 累加器只能混成一锅（子代理同时跑时尤其离谱），
 而且它的载荷里根本没有会话 id。（详见 `src/client/session-store.ts` 的说明。）

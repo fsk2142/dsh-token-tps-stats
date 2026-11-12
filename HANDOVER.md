@@ -25,7 +25,7 @@
 | 远端 | `git@github.com:fsk2142/dsh-token-tps-stats.git` |
 | 版本 | `1.0.0` |
 | `tsc` | 干净 |
-| 单测 | **123 条全绿**（`tps-meter` 23 / `tps-history` 9 / `chart-geometry` 20 / `chart-store` 9 / `session-store` 20 / `label` 17 / `pacing` 11 / `live-buffer` 5 / `format` 6 / `replay-regression` 2） |
+| 单测 | **131 条全绿**（`tps-meter` 23 / `tps-history` 9 / `chart-geometry` 20 / `chart-store` 9 / `session-store` 20 / `label` 17 / `install` 8 / `pacing` 11 / `live-buffer` 5 / `format` 6 / `replay-regression` 2） |
 | 构建 | 成功（`lib/client.js` **16.3 KB**（minify 后）/ gzip 6.5 KB；`lib/index.js` 1.7 KB） |
 | 装进 profile | **已装**（`desktop` profile，`file:` 链接到本目录；宿主读的就是 `lib/client.js`） |
 | 真机槽位 | `conversation.composer.dock` → `token-tps-stats`（order -1）；`shell.overlay` → `token-tps-stats-chart` |
@@ -48,7 +48,7 @@
 | `src/client/format.ts` | `formatRate`（**一律取整**，用户 2026-11-13 要求不要小数） | 低 |
 | `src/client/tps-pill.ts` | **胶囊**：官方同款内联样式 + 仪表图标 + 点开弹层（带上**本会话**那份状态）+ **定宽数字**；数据从 `useChat` 槽位属性读 | 中（样式改动要靠真机看） |
 | `src/client/tps-chart.ts` | **弹层**：`shell.overlay` + `position: fixed`，折线图 + 时长切换 + Esc/点外面关闭；历史来自 `chart-store` 里那份会话状态 | 中 |
-| `src/client/install.ts` | **注册**：嵌套注入 `slots`，注册胶囊与弹层（**不再注册事件定义**） | **高**（见下面「不能碰的边界」） |
+| `src/client/install.ts` | **注册**：嵌套注入 `slots`，再用 `slots.inject` 等声明提交——**不直接 `register`**（直接注册在重启后会报 `slot "…" is not declared`）；注册胶囊与弹层（**不再注册事件定义**） | **高**（见下面「不能碰的边界」） |
 | `src/client/dom.d.ts` | `window` 的最小手写声明（**只为它**，不引整套 DOM 类型） | 低 |
 | `src/client/react.d.ts` | react 的最小类型声明（宿主提供，本地不装） | 低 |
 | `src/client/index.ts` | 客户端入口，`apply` 只做一次 `installTpsPill` | 低 |
@@ -97,10 +97,28 @@
 ### 1. 顶层 `inject` 必须保持为空数组
 
 `src/client/index.ts` 里 `export const inject = []`。所有需要的服务
-（`uiConversation`、`slots`）都走 `ctx.inject([...], cb)` 的**嵌套注入**。
+（`slots`）都走 `ctx.inject([...], cb)` 的**嵌套注入**。
 
 **为什么**：顶层 `inject` 里列出的服务缺失时，cordis 会判定**整个客户端包激活失败** ——
 用户的设置页与侧边栏会一起消失。嵌套注入最坏只是「这个功能不显示」。
+
+### 1b. 必须用 `slots.inject` 等声明，不能拿到 `slots` 就直接 `register`
+
+**2026-11-13 真机踩出来的**：用户重启后胶囊消失，控制台报
+
+```
+Error: slot "conversation.composer.dock" is not declared
+       (a parent entry's children table must declare it)
+Error: slot "shell.overlay" is not declared
+```
+
+槽位声明由**声明方条目**在自己的生命周期里建立，窗口形态变化、条目重挂时还会被
+撤掉重建。激活时立刻 `register`，赌的是「这一刻声明已经在了」—— 重启后模块批次
+顺序一变，这条竞态就常态化了。
+
+正确写法是 `slots.inject(key, () => slots.register(options, component))`：声明在
+就同步跑、还没提交就挂到提交之后、声明重建就再跑一次（先执行上一次的清理）。
+`register` 的返回值要**原样**交给它，声明消失时槽位条目才跟着消失。
 
 ### 2. `events.register` 必须挂在对象上调用
 
