@@ -188,7 +188,7 @@ export function installTpsPill(ctx: TpsPluginContext): void {
             const off = slots.register(
               {
                 name: "conversation.composer.dock",
-                id: "llm-account-tps",
+                id: "token-tps-stats",
                 // 负 order → 排在官方两个胶囊（轮次/步数 = 0、用量 = 1）的**左边**。
                 order: -1,
               },
