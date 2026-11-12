@@ -49,6 +49,27 @@ describe("纵轴：取整到可读的数", () => {
     expect(axisTicks(50, 2)).toEqual([0, 25, 50]);
     expect(axisTicks(10, 1)).toEqual([0, 10]);
   });
+
+  it("**刻度一律是整数**（用户要求不要小数；除不尽就取整并去重）", () => {
+    for (const max of [50, 100, 200, 500, 1_000, 3, 7]) {
+      for (const count of [2, 3, 4]) {
+        const ticks = axisTicks(max, count);
+        expect(ticks.at(-1), "顶端必须是 max").toBe(max);
+        for (const tick of ticks) expect(Number.isInteger(tick), `${tick} 不是整数`).toBe(true);
+        // 升序、无重复。
+        for (let index = 1; index < ticks.length; index += 1) {
+          expect(ticks[index]!).toBeGreaterThan(ticks[index - 1]!);
+        }
+      }
+    }
+  });
+
+  it("**量程也是整数**：2.5 这种「数学上漂亮」的数也取整", () => {
+    // 峰值 2.4 → 阶梯里落进 2.5 档 → 取整成 3（不是 2.5）。
+    expect(niceMax(2.4)).toBe(3);
+    // 峰值 0.9 → 1（不是 0）。
+    expect(niceMax(0.9)).toBe(1);
+  });
 });
 
 describe("几何：点序 → 像素坐标", () => {

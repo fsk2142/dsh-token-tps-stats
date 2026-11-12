@@ -1,23 +1,32 @@
 /**
- * **数字格式化**（2026-11-12，第 3 步把它从 `tps-pill.ts` 拆出来）。
+ * **数字格式化**（2026-11-12 从 `tps-pill.ts` 拆出来；2026-11-13 按用户要求改成整数）。
  *
  * 为什么单独一个文件：胶囊和折线图弹层都要显示 tok/s，而它们**互相不 import**
  *（弹层挂在 `shell.overlay`、胶囊挂在 `conversation.composer.dock`）。共用一个
  * 格式化函数就不会出现「胶囊显示 4.2、弹层显示 4」这种各说各话的情况，
  * 也避免两个组件文件互相 import 形成环。
  *
+ * ## 为什么一律取整（2026-11-13 用户反馈）
+ *
+ * 用户原话：「速度的加减速变化按照整数变化，不要有小数了，实际上也不可能存在小数
+ * 的情况」。
+ *
+ * 这个读数本来就是**估算**（字符数 ÷ 4.2），小数位的精度是**假的** —— 它来自换算
+ * 系数的不确定性，不是真实的测量精度。而且官方那个胶囊显示的是整数 tok/s，
+ * 我们显示 `4.2` 反而比它「精确」得可疑。
+ *
+ * 所以这里统一 `Math.round`。代价是 0.5~1.5 之间的读数会显示成 `0`/`1`/`2`，
+ * 对「空闲时显示 0」这条要求没有影响（低于 0.5 的读数原本就被速度计判为 0）。
+ *
  * @module dsh-token-tps-stats/src/client/format
  */
 
 /**
- * 把数值格式化成显示文本。
- *
- * ≥10 取整、<10 保留一位（与官方 `formatTokensPerSecond` 同一口径）。
+ * 把数值格式化成显示文本（**整数**）。
  * @param value - tok/s。
  * @returns 显示文本。
  */
 export function formatRate(value: number): string {
   const clamped = Number.isFinite(value) ? Math.max(0, value) : 0;
-  if (clamped === 0) return "0";
-  return clamped >= 10 ? String(Math.round(clamped)) : String(Math.round(clamped * 10) / 10);
+  return String(Math.round(clamped));
 }

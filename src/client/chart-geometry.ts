@@ -44,12 +44,16 @@ export interface ChartGeometry {
 }
 
 /**
- * 把最大值「向上取整」到一眼能读的数（1 / 2 / 2.5 / 5 / 10 × 10^n）。
+ * 把最大值「向上取整」到一眼能读的数（1 / 2 / 2.5 / 5 / 10 × 10^n），再**取整**。
  *
  * 为什么不能直接用峰值当最大值：峰值 47 时纵轴顶端会标成 47，刻度只能标 0/12/23/35
  * 这种读不顺的数。取整到 50 之后，刻度就是 0/25/50。
+ *
+ * 为什么最后还要 `Math.round`（2026-11-13）：用户要求「按照整数变化，不要有小数」。
+ * 刻度是给人看的数字，`2.5` 这种只是数学上漂亮、读起来不整齐；取整后 2.5 → 3，
+ * 刻度就是 0/2/3（`axisTicks` 会去重）。
  * @param value - 峰值（tok/s）。
- * @returns 不小于 `value` 的「整齐」数；`value <= 0` 时给一个最小量程。
+ * @returns 不小于 `value` 的「整齐」整数；`value <= 0` 时给一个最小量程。
  */
 export function niceMax(value: number): number {
   if (!Number.isFinite(value) || value <= 0) return 10;
@@ -57,24 +61,34 @@ export function niceMax(value: number): number {
   const magnitude = Math.pow(10, exponent);
   const normalized = value / magnitude;
   const steps = [1, 2, 2.5, 5, 10];
+  let picked = 10 * magnitude;
   for (const step of steps) {
-    if (normalized <= step) return step * magnitude;
+    if (normalized <= step) {
+      picked = step * magnitude;
+      break;
+    }
   }
-  return 10 * magnitude;
+  // 小于 1 的量程没有意义（峰值都 >0 了，轴底至少给到 1），其余取整。
+  return Math.max(1, Math.round(picked));
 }
 
 /**
- * 造纵轴刻度（从 0 到 `max`，含两端）。
+ * 造纵轴刻度（从 0 到 `max`，含两端），**只出整数**。
+ *
+ * `max / count` 不能整除时（例如 max=50、count=3）中间刻度会取整，重复值去掉 ——
+ * 宁可少一条刻度线，也不要出现 `16.67` 这种读数。
  * @param max - 纵轴最大值（建议先过 {@link niceMax}）。
- * @param count - 段数（刻度数 = count + 1）。
- * @returns 从 0 到 `max` 的刻度值。
+ * @param count - 段数（刻度数最多 count + 1）。
+ * @returns 从 0 到 `max` 的整数刻度（升序、无重复）。
  */
 export function axisTicks(max: number, count = 2): number[] {
-  const safeMax = Number.isFinite(max) && max > 0 ? max : 10;
+  const safeMax = Math.max(1, Math.round(Number.isFinite(max) && max > 0 ? max : 10));
   const safeCount = Math.max(1, Math.floor(count));
   const ticks: number[] = [];
   for (let index = 0; index <= safeCount; index += 1) {
-    ticks.push((safeMax / safeCount) * index);
+    const value = Math.round((safeMax / safeCount) * index);
+    if (index === safeCount) ticks.push(safeMax);
+    else if (value !== ticks[ticks.length - 1]) ticks.push(value);
   }
   return ticks;
 }

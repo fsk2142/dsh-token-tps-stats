@@ -121,27 +121,20 @@ function ensureMeter(): TpsMeterLike {
   return meter;
 }
 
-/** 订阅者（组件挂载时登记；帧到达时被通知）。 */
+/**
+ * 胶囊的订阅者。
+ *
+ * **只有胶囊自己用**：它挂载时登记，帧到达（排空后）时被通知一次去刷新数字。
+ *
+ * 折线图弹层曾经也订阅（想「帧到就立刻重画」），后来又去掉了 —— 折线按**整秒**取点，
+ * 每秒最多变一次，逐帧重画只会白烧一次布局（弹层位置要读 `getBoundingClientRect`，
+ * 那会强制回流）。所以这里不再导出订阅入口，少一个对外契约。
+ */
 const listeners = new Set<() => void>();
 
 /** 通知所有订阅者「数据变了」。 */
 function notify(): void {
   for (const listener of listeners) listener();
-}
-
-/**
- * 订阅「有新帧到达 / 读数刷新」。
- *
- * 胶囊自己用它触发重渲染；折线图弹层也用它 —— 打开时曲线要跟着新帧长出来，
- * 不必等它自己的 500ms 定时器。
- * @param listener - 回调。
- * @returns 取消订阅。
- */
-export function subscribeLive(listener: () => void): () => void {
-  listeners.add(listener);
-  return () => {
-    listeners.delete(listener);
-  };
 }
 
 /**

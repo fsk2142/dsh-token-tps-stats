@@ -39,6 +39,22 @@ const hostConfig: UserConfig = {
  * 与 `dsh-llm-account` 同一套包装：宿主 loader 用
  * `window.__ModuleLoader__.load({ id, factory })` 包住产物，`require` 由 loader 注入，
  * 最后读 `module.exports` 上的 `{ apply, inject }`。
+ *
+ * ## 为什么开 `minify`（2026-11-13 用户要求「优化加载速度」）
+ *
+ * 这个产物的注释很多（设计决策都写在源码里，源码注释会被完整搬进 `.js`）——
+ * 不压缩时 72.6 KB 里有约 20 KB 是注释。注释不影响正确性，但**要浏览器解析**，
+ * 而这段代码是页面启动链路里的一环。压缩后只剩可执行语义，解析量直接少三成。
+ *
+ * `minify: true`（而不是默认的 `"dce-only"`）才是真正去掉注释 / 缩短标识符的那档。
+ * banner / intro / footer 是**addon**（在压缩之后拼接），所以 `module` 与 `exports`
+ * 那两个名字不会被改名或删掉 —— 压缩完仍要能跑 `require` 注入那套协议。
+ *
+ * ## 为什么没有 `immediately`
+ *
+ * `dsh.client.immediately` 会让这个包在启动阶段**立刻**变成真实模块。我们只是往两个
+ * 槽位注册组件，不需要抢跑道；不设它，宿主按需物化（第一次 `require` 时才执行工厂），
+ * 首屏更轻。
  */
 const clientConfig: UserConfig = {
   name: `${PACKAGE_NAME}/client`,
@@ -48,9 +64,13 @@ const clientConfig: UserConfig = {
   platform: "browser",
   // 别漏：否则按 engines.node 编译，浏览器跑不了。
   target: "es2022",
+  minify: true,
   dts: false,
   // 不能清空 host 产物。
   clean: false,
+  // `format: cjs` 时 rolldown 会忽略 `platform: 'browser'`；这里显式指定，
+  // 免得它按 Node 的假设做替换（浏览器里没有 `process` / `node:` 模块）。
+  inputOptions: { platform: "browser" },
   outputOptions: {
     entryFileNames: "client.js",
     banner: [
