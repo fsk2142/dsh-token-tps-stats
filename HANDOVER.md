@@ -25,8 +25,8 @@
 | 远端 | `git@github.com:fsk2142/dsh-token-tps-stats.git` |
 | 版本 | `1.0.0` |
 | `tsc` | 干净 |
-| 单测 | **76 条全绿**（`tps-meter` 23 / `tps-history` 9 / `chart-geometry` 17 / `chart-store` 9 / `pacing` 11 / `live-buffer` 5 / `replay-regression` 2） |
-| 构建 | 成功（`lib/client.js` ≈ 72.6 KB、`lib/index.js` 1.7 KB） |
+| 单测 | **84 条全绿**（`tps-meter` 23 / `tps-history` 9 / `chart-geometry` 19 / `chart-store` 9 / `pacing` 11 / `live-buffer` 5 / `format` 6 / `replay-regression` 2） |
+| 构建 | 成功（`lib/client.js` **17.7 KB**（minify 后）/ gzip 6.8 KB；`lib/index.js` 1.7 KB） |
 | 装进 profile | **已装**（`desktop` profile，`file:` 链接到本目录；宿主读的就是 `lib/client.js`） |
 | 真机槽位 | `conversation.composer.dock` → `token-tps-stats`（order -1）；`shell.overlay` → `token-tps-stats-chart` |
 
@@ -64,6 +64,8 @@
 | 「峰值都是 1000 多了，是不是计算方法不对」（2026-11-13） | 比上面那条更狠，根因完全不同：**时间轴**。字到浏览器手里是成批的，主线程被占住后几百秒的流会在几毫秒内一次性 flush；按「到达时刻」累计就把几百秒的字压进 1 秒。现在 `live-buffer.ts` 攒一个宏任务，`pacing.ts` 按**宿主时间戳差值**把整批铺回它真正跨的时间（差值与时钟基准无关）。用本机真实时间线重放验证：旧做法 992 tok/s，新做法回到 ~66 |
 | 「曲线尽可能平滑，不要折线，突然上升突然下降」（2026-11-13） | `chart-geometry.ts` 的 path 从 `L` 改成**保形三次贝塞尔**（Fritsch–Carlson 夹逼）：转折处是弧，但极值点不过冲 —— 数据峰值就是曲线峰值 |
 | 「速度变化时胶囊宽度一直变，把所有胶囊推来推去，固定一个宽度」（2026-11-13） | 数字那一段占**固定 `4ch` 宽并右对齐**（`tabular-nums` 下等宽），文案拆成「前缀 + 定宽数字 + 单位」放进**同一个**子节点（`pill` 的 `gap: 6px` 只隔开图标与文字） |
+| 「速度按整数变化，不要有小数」（2026-11-13） | `format.ts` 的 `formatRate` 一律 `Math.round`；`chart-geometry.ts` 的 `niceMax` / `axisTicks` 也只出整数（2.5 档取整成 3、除不尽的刻度取整并去重）。理由写进了两个文件头：小数位来自换算系数的猜测，不是真精度 |
+| 「优化一下加载速度」（2026-11-13） | `tsdown.config.ts` 的 client 配置加 `minify: true`（默认 `dce-only` 只删死代码、**不删注释**，源码的设计说明会被整段搬进产物，约 20KB）。产物 72.6KB → **17.7KB**、gzip 26.2KB → **6.8KB**；顺带显式 `inputOptions.platform = 'browser'`（`format: cjs` 时 rolldown 会忽略 `platform` 字段），构建告警消失 |
 
 `tps-history` 的历史桶**也**改成同一口径（分母固定），否则折线图的点还会顶到天上。
 
