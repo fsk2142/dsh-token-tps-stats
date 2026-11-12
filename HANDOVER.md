@@ -25,8 +25,8 @@
 | 远端 | `git@github.com:fsk2142/dsh-token-tps-stats.git` |
 | 版本 | `1.0.0` |
 | `tsc` | 干净 |
-| 单测 | **84 条全绿**（`tps-meter` 23 / `tps-history` 9 / `chart-geometry` 19 / `chart-store` 9 / `pacing` 11 / `live-buffer` 5 / `format` 6 / `replay-regression` 2） |
-| 构建 | 成功（`lib/client.js` **17.7 KB**（minify 后）/ gzip 6.8 KB；`lib/index.js` 1.7 KB） |
+| 单测 | **107 条全绿**（`tps-meter` 23 / `tps-history` 9 / `chart-geometry` 22 / `chart-store` 9 / `session-store` 20 / `pacing` 11 / `live-buffer` 5 / `format` 6 / `replay-regression` 2） |
+| 构建 | 成功（`lib/client.js` **16.3 KB**（minify 后）/ gzip 6.5 KB；`lib/index.js` 1.7 KB） |
 | 装进 profile | **已装**（`desktop` profile，`file:` 链接到本目录；宿主读的就是 `lib/client.js`） |
 | 真机槽位 | `conversation.composer.dock` → `token-tps-stats`（order -1）；`shell.overlay` → `token-tps-stats-chart` |
 
@@ -34,17 +34,20 @@
 
 | 文件 | 职责 | 改动风险 |
 | --- | --- | --- |
-| `src/client/pacing.ts` | **时间轴重排**：把一批 chunk 按宿主时间差铺回它真正跨越的那段时间（修「峰值冲到 1000 多」的核心） | 低（有单测 + 真实数据重放） |
-| `src/client/live-buffer.ts` | **帧缓冲**：攒一个宏任务再排空，让重排能看见「这一批的最后一帧」 | 低（有单测） |
-| `src/client/tps-meter.ts` | **计算核心**：字符→token 换算、1 秒×9 窗口、**3 秒低通**、指针衰减。纯函数 + 有状态累加器，**不碰 React、不碰宿主** | 低（有完整单测） |
+| `src/client/session-store.ts` | **每会话一份状态**：按 `sessionId` 认领 `{meter, history, baseline, sampledAt}`；`pushSnapshot` 吃一拍 `legacy.partial`（差分 + 摊开 + 累加）。**这是「各算各的」的关键文件** | 中（有单测） |
+| `src/client/progress.ts` | **差分**：块文本提取（只认 text/reasoning）、`newTextSince`（无基线/换流/重试一律不产字符，幂等） | 低（有单测） |
+| `src/client/spread.ts` | **摊开**：把一拍的字符按两次采样的真实时间差分到秒片上（守恒、零头进最后一片） | 低（有单测） |
+| `src/client/pacing.ts` | **旧的时间轴重排**（按宿主时间戳差铺回）。**当前链路已不再调用**，只被 `live-buffer.ts` 与两个单测引用；留着是因为它是「积压 992 tok/s」那次事故的证据与备选方案 | 低（有单测） |
+| `src/client/live-buffer.ts` | **旧的帧缓冲**（攒一个宏任务再排空）。同样已不在链路里 | 低（有单测） |
+| `src/client/tps-meter.ts` | **计算核心**：字符→token 换算、1 秒×9 窗口、**3 秒低通**、指针衰减；有 `push(text)` 与 `pushCounts(counts)` 两个入口。纯函数 + 有状态累加器，**不碰 React、不碰宿主** | 低（有完整单测） |
 | `src/client/tps-history.ts` | **折线图历史**：每秒一个桶，只保留 3 分钟；每点 = 最近 9 秒滑动平均（与胶囊同口径） | 低（有单测） |
-| `src/client/chart-geometry.ts` | **折线几何**：niceMax（47→50）、刻度、**保形平滑曲线**（单调三次 Hermite → 贝塞尔，不过冲） | 低（有单测） |
-| `src/client/chart-store.ts` | **弹层开关状态**：胶囊与弹层不共享 React 树，靠它交换「开没开 / 锚点 / 时长」；还存胶囊 DOM 元素供读当前矩形 | 低（有单测） |
+| `src/client/chart-geometry.ts` | **折线几何**：`axisScale`（阶梯 1/2/5/10/25/50/100/250…，108→150）、`axisTicks`（整数）、**保形平滑曲线**（单调三次 Hermite → 贝塞尔，不过冲） | 低（有单测） |
+| `src/client/chart-store.ts` | **弹层开关状态**：胶囊与弹层不共享 React 树，靠它交换「开没开 / 锚点 / 时长 / **看哪个会话**」；还存胶囊 DOM 元素供读当前矩形 | 低（有单测） |
 | `src/client/styles.ts` | **共享排版与表面**：官方胶囊那套字号/行高变量、弹层的白底 + elevation 阴影、文字与折线同色令牌 | 低 |
-| `src/client/format.ts` | `formatRate`（≥10 取整、<10 一位小数，与官方同口径） | 低 |
-| `src/client/tps-pill.ts` | **胶囊**：官方同款内联样式 + 仪表图标 + 点开弹层 + 帧进缓冲 + **定宽数字** | 中（样式改动要靠真机看） |
-| `src/client/tps-chart.ts` | **弹层**：`shell.overlay` + `position: fixed`，折线图 + 时长切换 + Esc/点外面关闭 | 中 |
-| `src/client/install.ts` | **注册**：嵌套注入 `uiConversation` + `slots`，注册事件定义、胶囊与弹层 | **高**（见下面「不能碰的边界」） |
+| `src/client/format.ts` | `formatRate`（**一律取整**，用户 2026-11-13 要求不要小数） | 低 |
+| `src/client/tps-pill.ts` | **胶囊**：官方同款内联样式 + 仪表图标 + 点开弹层（带上**本会话**那份状态）+ **定宽数字**；数据从 `useChat` 槽位属性读 | 中（样式改动要靠真机看） |
+| `src/client/tps-chart.ts` | **弹层**：`shell.overlay` + `position: fixed`，折线图 + 时长切换 + Esc/点外面关闭；历史来自 `chart-store` 里那份会话状态 | 中 |
+| `src/client/install.ts` | **注册**：嵌套注入 `slots`，注册胶囊与弹层（**不再注册事件定义**） | **高**（见下面「不能碰的边界」） |
 | `src/client/dom.d.ts` | `window` 的最小手写声明（**只为它**，不引整套 DOM 类型） | 低 |
 | `src/client/react.d.ts` | react 的最小类型声明（宿主提供，本地不装） | 低 |
 | `src/client/index.ts` | 客户端入口，`apply` 只做一次 `installTpsPill` | 低 |
@@ -65,7 +68,9 @@
 | 「曲线尽可能平滑，不要折线，突然上升突然下降」（2026-11-13） | `chart-geometry.ts` 的 path 从 `L` 改成**保形三次贝塞尔**（Fritsch–Carlson 夹逼）：转折处是弧，但极值点不过冲 —— 数据峰值就是曲线峰值 |
 | 「速度变化时胶囊宽度一直变，把所有胶囊推来推去，固定一个宽度」（2026-11-13） | 数字那一段占**固定 `4ch` 宽并右对齐**（`tabular-nums` 下等宽），文案拆成「前缀 + 定宽数字 + 单位」放进**同一个**子节点（`pill` 的 `gap: 6px` 只隔开图标与文字） |
 | 「速度按整数变化，不要有小数」（2026-11-13） | `format.ts` 的 `formatRate` 一律 `Math.round`；`chart-geometry.ts` 的 `niceMax` / `axisTicks` 也只出整数（2.5 档取整成 3、除不尽的刻度取整并去重）。理由写进了两个文件头：小数位来自换算系数的猜测，不是真精度 |
-| 「优化一下加载速度」（2026-11-13） | `tsdown.config.ts` 的 client 配置加 `minify: true`（默认 `dce-only` 只删死代码、**不删注释**，源码的设计说明会被整段搬进产物，约 20KB）。产物 72.6KB → **17.7KB**、gzip 26.2KB → **6.8KB**；顺带显式 `inputOptions.platform = 'browser'`（`format: cjs` 时 rolldown 会忽略 `platform` 字段），构建告警消失 |
+| 「优化一下加载速度」（2026-11-13） | `tsdown.config.ts` 的 client 配置加 `minify: true`（默认 `dce-only` 只删死代码、**不删注释**，源码的设计说明会被整段搬进产物，约 20KB）。产物 72.6KB → **16.3KB**、gzip 26.2KB → **6.5KB**；顺带显式 `inputOptions.platform = 'browser'`（`format: cjs` 时 rolldown 会忽略 `platform` 字段），构建告警消失 |
+| 「峰值过高不建议直接纵轴翻倍，可以 50 递增，峰值向上取 50 的整数倍，比如 108 取 150」（2026-11-13） | `chart-geometry.ts` 新增 `axisScale`：在 1/2/5/10/25/50/100/250/500… 这串阶梯里挑**能放下峰值的最小格宽**，再要求 `ceil(峰值/格宽) ≤ 3` 段。108 → 格宽 50 → 上限 150、刻度 0/50/100/150；29 → 30；3.4 → 4；空图表固定 0/5/10。**上限永远是格宽的整数倍**，刻度直接取它，不再均匀细分（那会出 16.67 这种数） |
+| 「统计的是每个会话自己的速度，怎么是全局的会话速度」（2026-11-13） | 根因：`uiConversation.events` 的注册表**全局共享**（键是 kind，重复注册直接抛），每个会话各有一个装配器把同一个 Definition 拿去匹配自己那份事件流 → 所有会话（含子代理）的字被加进同一个模块级累加器；而 `assistant/live-chunk` 的载荷里**没有会话 id**，从回调分不出来。数据源改成**槽位标准属性**：dock 是 `scope: "session"`，`useChat` 返回的就是当前会话的聊天快照（官方那两个胶囊读的同一份）。新增 `session-store.ts`（每会话一份，按 `sessionId` 认领）、`progress.ts`（累计文本做差分，幂等）、`spread.ts`（按采样时间差摊开）。一次性的全局 `tps-meter`/`tps-history` 单例入口就此删除 |
 
 `tps-history` 的历史桶**也**改成同一口径（分母固定），否则折线图的点还会顶到天上。
 
