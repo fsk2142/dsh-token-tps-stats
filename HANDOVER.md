@@ -22,11 +22,11 @@
 | 项 | 值 |
 | --- | --- |
 | 仓库 | `C:\Work\dsh-plug-in\dsh-token-tps-stats` |
-| 远端 | `git@github.com:fsk2142/dsh-token-tps-stats.git`（第 3 步后推送） |
+| 远端 | `git@github.com:fsk2142/dsh-token-tps-stats.git` |
 | 版本 | `1.0.0` |
 | `tsc` | 干净 |
-| 单测 | **54 条全绿**（`tps-meter` 23 / `tps-history` 9 / `chart-geometry` 13 / `chart-store` 9） |
-| 构建 | 成功（`lib/client.js` ≈ 62.7 KB、`lib/index.js` 1.7 KB） |
+| 单测 | **76 条全绿**（`tps-meter` 23 / `tps-history` 9 / `chart-geometry` 17 / `chart-store` 9 / `pacing` 11 / `live-buffer` 5 / `replay-regression` 2） |
+| 构建 | 成功（`lib/client.js` ≈ 72.6 KB、`lib/index.js` 1.7 KB） |
 | 装进 profile | **已装**（`desktop` profile，`file:` 链接到本目录；宿主读的就是 `lib/client.js`） |
 | 真机槽位 | `conversation.composer.dock` → `token-tps-stats`（order -1）；`shell.overlay` → `token-tps-stats-chart` |
 
@@ -34,13 +34,15 @@
 
 | 文件 | 职责 | 改动风险 |
 | --- | --- | --- |
+| `src/client/pacing.ts` | **时间轴重排**：把一批 chunk 按宿主时间差铺回它真正跨越的那段时间（修「峰值冲到 1000 多」的核心） | 低（有单测 + 真实数据重放） |
+| `src/client/live-buffer.ts` | **帧缓冲**：攒一个宏任务再排空，让重排能看见「这一批的最后一帧」 | 低（有单测） |
 | `src/client/tps-meter.ts` | **计算核心**：字符→token 换算、1 秒×9 窗口、**3 秒低通**、指针衰减。纯函数 + 有状态累加器，**不碰 React、不碰宿主** | 低（有完整单测） |
 | `src/client/tps-history.ts` | **折线图历史**：每秒一个桶，只保留 3 分钟；每点 = 最近 9 秒滑动平均（与胶囊同口径） | 低（有单测） |
-| `src/client/chart-geometry.ts` | **折线几何**：niceMax（47→50）、刻度、SVG path。纯函数 | 低（有单测） |
+| `src/client/chart-geometry.ts` | **折线几何**：niceMax（47→50）、刻度、**保形平滑曲线**（单调三次 Hermite → 贝塞尔，不过冲） | 低（有单测） |
 | `src/client/chart-store.ts` | **弹层开关状态**：胶囊与弹层不共享 React 树，靠它交换「开没开 / 锚点 / 时长」；还存胶囊 DOM 元素供读当前矩形 | 低（有单测） |
-| `src/client/styles.ts` | **共享排版与表面**：官方胶囊那套字号/行高变量、弹层的白底 + elevation 阴影 | 低 |
+| `src/client/styles.ts` | **共享排版与表面**：官方胶囊那套字号/行高变量、弹层的白底 + elevation 阴影、文字与折线同色令牌 | 低 |
 | `src/client/format.ts` | `formatRate`（≥10 取整、<10 一位小数，与官方同口径） | 低 |
-| `src/client/tps-pill.ts` | **胶囊**：官方同款内联样式 + 仪表图标 + 点击打开弹层 + 帧到达时同时喂速度计与历史 | 中（样式改动要靠真机看） |
+| `src/client/tps-pill.ts` | **胶囊**：官方同款内联样式 + 仪表图标 + 点开弹层 + 帧进缓冲 + **定宽数字** | 中（样式改动要靠真机看） |
 | `src/client/tps-chart.ts` | **弹层**：`shell.overlay` + `position: fixed`，折线图 + 时长切换 + Esc/点外面关闭 | 中 |
 | `src/client/install.ts` | **注册**：嵌套注入 `uiConversation` + `slots`，注册事件定义、胶囊与弹层 | **高**（见下面「不能碰的边界」） |
 | `src/client/dom.d.ts` | `window` 的最小手写声明（**只为它**，不引整套 DOM 类型） | 低 |
@@ -59,6 +61,9 @@
 | 「折线颜色，还有其他文字的字体颜色，和官方那个保持一致」 | 折线、标题、副标题、刻度、轴标签**全部**改用 `INK` = `--dsw-alias-label-tertiary`（就是官方 `.pill` 那一条 `color:`）；标题去掉 `font-weight: 600`。唯一例外是**选中的时长按钮**用 `label-secondary`（不选就分不出选了哪个） |
 | 「变化速度上升太快、下降也太快，做个 3 秒缓冲」 | `tps-meter` 加一层**一阶低通**（τ = `TPS_FOLLOW_MS` = 3s）；衰减常数 `TPS_DECAY_MS` 从 700ms 改成 3s，并且从**显示值**衰减 |
 | 「偶尔冲到峰值 300 多，完全不真实」 | 根因：旧实现只把「已经有数据的窗口」计入分母，停顿后突然一大段时相当于单窗口求平均 → 1200 字符≈286 token 直接读成 286。现在**分母固定 9**、空窗按 0，同样一段读成 ≈32 |
+| 「峰值都是 1000 多了，是不是计算方法不对」（2026-11-13） | 比上面那条更狠，根因完全不同：**时间轴**。字到浏览器手里是成批的，主线程被占住后几百秒的流会在几毫秒内一次性 flush；按「到达时刻」累计就把几百秒的字压进 1 秒。现在 `live-buffer.ts` 攒一个宏任务，`pacing.ts` 按**宿主时间戳差值**把整批铺回它真正跨的时间（差值与时钟基准无关）。用本机真实时间线重放验证：旧做法 992 tok/s，新做法回到 ~66 |
+| 「曲线尽可能平滑，不要折线，突然上升突然下降」（2026-11-13） | `chart-geometry.ts` 的 path 从 `L` 改成**保形三次贝塞尔**（Fritsch–Carlson 夹逼）：转折处是弧，但极值点不过冲 —— 数据峰值就是曲线峰值 |
+| 「速度变化时胶囊宽度一直变，把所有胶囊推来推去，固定一个宽度」（2026-11-13） | 数字那一段占**固定 `4ch` 宽并右对齐**（`tabular-nums` 下等宽），文案拆成「前缀 + 定宽数字 + 单位」放进**同一个**子节点（`pill` 的 `gap: 6px` 只隔开图标与文字） |
 
 `tps-history` 的历史桶**也**改成同一口径（分母固定），否则折线图的点还会顶到天上。
 
@@ -267,6 +272,10 @@ pnpm typecheck && pnpm test && pnpm build
 | 数字始终 0 | 检查 `arrivalTime` 是否被改回 `event.time`；检查 `role` 判定是否被改回 `chars===0` |
 | 数字闪一下就没 | 检查窗口边界是否写成 `>= from && < to` |
 | **偶尔冲到 300 多** | `windowedRate` 的分母是不是又变回「只数有数据的窗口」 |
+| **偶尔冲到 1000 多** | 帧是不是又绕过 `live-buffer`／`pacing` 直接按到达时刻推送了；`retimeBatch` 是不是又把「太旧的帧」夹到下限（夹住会把 3 分钟以前的帧全堆在一点，读数反而爆表） |
+| 曲线变成直角台阶 | `chart-geometry` 的 path 是不是又用回了 `L` |
+| 曲线在峰值处过冲 | 保形夹逼（`3 × 割线斜率`）是不是被去掉了；普通 Catmull-Rom 会过冲 |
+| 胶囊宽度还在变 | 数字那一段的 `minWidth: "4ch"` 是否还在；`formatRate` 是否会被塞进更长的小数 |
 | 数字升太快/降太快 | `TPS_FOLLOW_MS` / `TPS_DECAY_MS`（现都是 3000） |
 | 数字偏高/偏低 | 先和官方胶囊并排对比，再考虑调 `OTHER_CHARS_PER_TOKEN`（现 4.2） |
 | 控制台 `Forced reflow` 警告 | 组件的定时器是否在归零后仍然跑（应该在归零时 `stop()`） |

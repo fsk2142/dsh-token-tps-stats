@@ -1,2 +1,5 @@
 node_modules/
 *.log
+
+# 一次性诊断数据（真实流式时间线重放，见 tests/client/replay-regression.test.ts）
+.tmp/

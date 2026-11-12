@@ -1,14 +1,26 @@
 /**
- * **折线图几何**的单测（2026-11-12，第 3 步）。
+ * **折线图几何**的单测（2026-11-12，第 3 步；2026-11-13 加平滑曲线）。
  *
- * 钉住三件事：
+ * 钉住四件事：
  * 1. 纵轴最大值取整到「一眼能读」的数（47 → 50，不是 47）；
  * 2. 点序 → 像素坐标：首尾贴边、只有 1 点时居中、越界值被夹住；
- * 3. path 字符串的形状（`M` 开头、点用 `L` 连、填充闭合到基线）。
+ * 3. **平滑曲线不过冲**：数据里的峰值就是曲线的峰值（用户要「不要突然上升突然下降」，
+ *    但也不能把假尖峰再画大）；
+ * 4. path 形状：`M` 开头、多点时用 `C`（三次贝塞尔）连接、填充闭合到基线。
  */
 import { describe, expect, it } from "vitest";
 
 import { axisTicks, buildGeometry, niceMax } from "../../src/client/chart-geometry";
+
+/** 从 path 里取出所有坐标（控制点与端点都算）。 */
+function pathPoints(d: string): { x: number; y: number }[] {
+  const numbers = d.match(/-?\d+(?:\.\d+)?/g)?.map(Number) ?? [];
+  const points: { x: number; y: number }[] = [];
+  for (let index = 0; index + 1 < numbers.length; index += 2) {
+    points.push({ x: numbers[index]!, y: numbers[index + 1]! });
+  }
+  return points;
+}
 
 describe("纵轴：取整到可读的数", () => {
   it("47 → 50（不是 47 这种读不顺的数）", () => {
@@ -27,7 +39,7 @@ describe("纵轴：取整到可读的数", () => {
     expect(niceMax(100)).toBe(100);
   });
 
-  it("0 或负值给一个最小量程（避免除零、也避免纵轴塌成一条线）", () => {
+  it("0 或负值给一个最小量程", () => {
     expect(niceMax(0)).toBe(10);
     expect(niceMax(-5)).toBe(10);
     expect(niceMax(Number.NaN)).toBe(10);
@@ -65,24 +77,60 @@ describe("几何：点序 → 像素坐标", () => {
     }
   });
 
-  it("path：`M` 开头、后续点用 `L`；填充闭合到基线 `Z`", () => {
-    const geometry = buildGeometry([0, 5], { width: 100, height: 40, max: 10 });
-    expect(geometry.line.startsWith("M")).toBe(true);
-    expect(geometry.line).toContain("L");
-    expect(geometry.area.endsWith("Z")).toBe(true);
-    expect(geometry.area.startsWith(geometry.line)).toBe(true);
-  });
-
-  it("空序列给空 path（调用方据此跳过绘制）", () => {
-    expect(buildGeometry([], { width: 100, height: 40, max: 10 }).line).toBe("");
-  });
-
-  it("点数 = 序列长度，坐标带两位小数（不吐一长串浮点尾数）", () => {
+  it("点数 = 序列长度，坐标带两位小数", () => {
     const geometry = buildGeometry([0, 1, 2, 3], { width: 90, height: 30, max: 10 });
     expect(geometry.points).toHaveLength(4);
     for (const point of geometry.points) {
       expect(point.x).toBe(Math.round(point.x * 100) / 100);
       expect(point.y).toBe(Math.round(point.y * 100) / 100);
     }
+  });
+});
+
+describe("平滑曲线", () => {
+  it("**多点时用贝塞尔 `C`，不是折线 `L`**（用户要「不要折线」）", () => {
+    const geometry = buildGeometry([0, 4, 8, 2, 0], { width: 100, height: 40, max: 10 });
+    expect(geometry.line.startsWith("M")).toBe(true);
+    expect(geometry.line).toContain("C");
+    expect(geometry.line).not.toMatch(/(^|\s)L/);
+  });
+
+  it("**不过冲**：曲线的控制点不越过数据里的峰值与谷值", () => {
+    /*
+     * 「长时间 0 → 一段很高 → 又回 0」是最容易出现假尖峰的形状。
+     * 保形处理后，所有控制点都必须落在 [0, 峰值] 对应的像素区间内。
+     */
+    const values = [0, 0, 0, 10, 10, 0, 0, 0];
+    const geometry = buildGeometry(values, { width: 140, height: 40, max: 10 });
+    const all = pathPoints(geometry.line);
+    const minY = Math.min(...all.map((point) => point.y));
+    const maxY = Math.max(...all.map((point) => point.y));
+    // 峰值 10 → y=0；0 → y=40。控制点不得超出 [0, 40]。
+    expect(minY).toBeGreaterThanOrEqual(0);
+    expect(maxY).toBeLessThanOrEqual(40);
+  });
+
+  it("**斜坡上不会冲过端点**（单调数据保持单调）", () => {
+    const geometry = buildGeometry([0, 2, 4, 6, 8, 10], { width: 100, height: 40, max: 10 });
+    const all = pathPoints(geometry.line);
+    // y 随值增大而减小：所有点（含控制点）必须落在 [0, 40]。
+    expect(Math.min(...all.map((point) => point.y))).toBeGreaterThanOrEqual(0);
+    expect(Math.max(...all.map((point) => point.y))).toBeLessThanOrEqual(40);
+  });
+
+  it("**两点仍用直线**（贝塞尔会退化成直线，没必要引入控制点）", () => {
+    const geometry = buildGeometry([0, 10], { width: 100, height: 40, max: 10 });
+    expect(geometry.line).toContain("L");
+    expect(geometry.line).not.toContain("C");
+  });
+
+  it("填充闭合到基线 `Z`，且以折线 path 开头", () => {
+    const geometry = buildGeometry([0, 5, 3], { width: 100, height: 40, max: 10 });
+    expect(geometry.area.endsWith("Z")).toBe(true);
+    expect(geometry.area.startsWith(geometry.line)).toBe(true);
+  });
+
+  it("空序列给空 path（调用方据此跳过绘制）", () => {
+    expect(buildGeometry([], { width: 100, height: 40, max: 10 }).line).toBe("");
   });
 });

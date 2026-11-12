@@ -59,6 +59,7 @@ import { createElement, useEffect, useState, type ReactElement } from "react";
 
 import { getChartState, setPillElement, subscribeChart, toggleChart, type ChartAnchor } from "./chart-store";
 import { formatRate } from "./format";
+import { createLiveBuffer, type FlushedFrame } from "./live-buffer";
 import { TYPO } from "./styles";
 import { pushHistory } from "./tps-history";
 import { createTpsMeter } from "./tps-meter";
@@ -145,11 +146,23 @@ export function subscribeLive(listener: () => void): () => void {
 
 /**
  * 推进一帧（由事件定义调用）。
+ *
+ * ## 为什么先进缓冲（2026-11-13，修「峰值偶尔冲到 1000 多」）
+ *
+ * 直接按 `at` 累计会把「积压后一次性 flush」的几千帧压进同一毫秒；缓冲攒一个宏任务后
+ * 再按**宿主时间差**铺回它们真正跨越的那段时间（详见 `pacing.ts` 的说明）。
+ * 正常流式下缓冲延迟 0~4ms，读数观感与逐帧推送没有区别。
  * @param chunk - 流式 chunk（含 `type` 与 `text`）。
- * @param meta - 该帧所属的 turn/step（当前不参与计算，见下）。
+ * @param meta - 该帧所属的 turn/step（当前不参与计算）。
  * @param at - 帧到达时刻（毫秒）。
+ * @param hostTime - 宿主事件自身的时刻（用于重排；缺失时退回 `at`）。
  */
-export function pushLiveChunk(chunk: unknown, meta: { turn?: unknown; step?: unknown }, at: number): void {
+export function pushLiveChunk(
+  chunk: unknown,
+  meta: { turn?: unknown; step?: unknown },
+  at: number,
+  hostTime?: number,
+): void {
   void meta;
   if (typeof chunk !== "object" || chunk === null) return;
   const type = (chunk as { type?: unknown }).type;
@@ -160,15 +173,50 @@ export function pushLiveChunk(chunk: unknown, meta: { turn?: unknown; step?: unk
   if (type !== "text-delta" && type !== "reasoning-delta") return;
   const text = (chunk as { text?: unknown }).text;
   if (typeof text !== "string" || text === "") return;
-  ensureMeter().push(text, at);
-  /*
-   * 同一批文本**也**喂给折线图的历史（按秒聚合原始字符）。
-   *
-   * 两套累加器而不是一套：速度计只保留 9 秒（那是胶囊需要的跨度），折线图要 3 分钟。
-   * 让速度计同时承担两种跨度，会把那个已经稳定的计算核心搅浑。
-   */
-  pushHistory(text, at);
+  liveBuffer().push({ text, arrival: at, host: hostTime });
+}
+
+/**
+ * 排空一批（时刻已经算好）：喂速度计与历史，再通知订阅者一次。
+ * @param frames - 已重排好的帧。
+ */
+function consumeFrames(frames: readonly FlushedFrame[]): void {
+  if (frames.length === 0) return;
+  for (const frame of frames) {
+    ensureMeter().push(frame.text, frame.at);
+    /*
+     * 同一批文本**也**喂给折线图的历史（按秒聚合原始字符）。
+     *
+     * 两套累加器而不是一套：速度计只保留 9 秒（那是胶囊需要的跨度），折线图要 3 分钟。
+     * 让速度计同时承担两种跨度，会把那个已经稳定的计算核心搅浑。
+     */
+    pushHistory(frame.text, frame.at);
+  }
+  // 整批只通知一次：几千帧逐帧通知会让 React 每次都重渲染。
   notify();
+}
+
+/**
+ * 模块级帧缓冲（**全会话一个**，与速度计同一理由）。
+ *
+ * 没有帧排队时它**不持有任何定时器**（`createLiveBuffer` 只在 `push` 时排一次）。
+ */
+let buffer: ReturnType<typeof createLiveBuffer> | undefined;
+
+/** 确保帧缓冲存在（幂等）。 */
+function liveBuffer(): ReturnType<typeof createLiveBuffer> {
+  if (buffer === undefined) buffer = createLiveBuffer(consumeFrames);
+  return buffer;
+}
+
+/**
+ * 清掉待处理的帧（插件卸载 / 槽位重注册时）。
+ *
+ * 不清的话，已排队的帧会在卸载后继续推给一个已经没人显示的仪表。
+ */
+export function disposeLiveBuffer(): void {
+  buffer?.dispose();
+  buffer = undefined;
 }
 
 /**
@@ -345,10 +393,28 @@ export function TpsPill(): unknown {
         onClick: (event: { currentTarget: unknown }) => toggleChart(anchorOf(event)),
       },
       GaugeIcon(),
+      /*
+       * 文案放在**一个**子节点里（`pill` 的 `gap: 6px` 只该隔开图标与文字；拆成
+       * 多个兄弟节点会连字与字之间也插进 6px）。
+       *
+       * 里面再拆成「固定前缀 + 定宽数字 + 单位」三段（2026-11-13 用户反馈：
+       * 「速度变化时会不停改变整个胶囊宽度，导致所有胶囊位置变化，能不能固定一个宽度」）。
+       *
+       * 官方那两个胶囊排在我们右边：我们一变宽，它们就跟着被推来推去。
+       * 所以数字占一个**固定字符宽度**（`ch` 单位 + `tabular-nums`，等宽数字下
+       * 4ch 容得下「1000」这种四位数），并**右对齐** —— 数字在框里变化，
+       * 胶囊外框纹丝不动。
+       */
       createElement(
         "span",
         { style: { minWidth: "0", overflow: "hidden", textOverflow: "ellipsis" } },
-        `实时输出速度（TPS）：${formatRate(value)} tok/s`,
+        "实时输出速度（TPS）：",
+        createElement(
+          "span",
+          { style: { display: "inline-block", minWidth: "4ch", textAlign: "end" } },
+          formatRate(value),
+        ),
+        " tok/s",
       ),
     ),
   );

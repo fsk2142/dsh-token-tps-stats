@@ -37,7 +37,7 @@
  */
 
 import { TpsChart } from "./tps-chart";
-import { pushLiveChunk, TpsPill } from "./tps-pill";
+import { disposeLiveBuffer, pushLiveChunk, TpsPill } from "./tps-pill";
 
 /** 探针需要的客户端上下文面（只用 `inject`，不碰别的服务）。 */
 export interface TpsPluginContext {
@@ -109,6 +109,10 @@ function disposeChart(): void {
 function releaseAll(): void {
   disposeChart();
   disposePill();
+  /*
+   * 已排队但还没排空的帧也要丢掉：插件卸载后它们会推给一个没人显示的仪表。
+   */
+  disposeLiveBuffer();
 }
 
 /** 一条 `assistant/live-chunk` 事件里我们关心的形状。 */
@@ -400,7 +404,17 @@ function definition(): TpsProbeDefinition {
        * 时间用 `arrivalTime`（**本地墙钟**），不用 `event.time`：读数时用的是
        * `Date.now()`，两个时钟混用会让每次比较都落进「空闲」分支（详见那函数的说明）。
        */
-      pushLiveChunk(match.event.data?.chunk, { turn: match.event.data?.turn, step: match.event.data?.step }, arrivalTime(match.event));
+      pushLiveChunk(
+        match.event.data?.chunk,
+        { turn: match.event.data?.turn, step: match.event.data?.step },
+        arrivalTime(match.event),
+        /*
+         * 同时把**宿主侧**的时刻也交出去：重排要用它算「这一批里各帧的真实间隔」
+         *（差值不受时钟基准影响，见 `pacing.ts`）。`event.time` 缺失时传 undefined，
+         * 那边会退回本地到达时刻。
+         */
+        typeof match.event.time === "number" && Number.isFinite(match.event.time) ? match.event.time : undefined,
+      );
       log(match.event, "start");
       return { chars, frames };
     },
@@ -410,7 +424,17 @@ function definition(): TpsProbeDefinition {
         chars += add;
         frames += 1;
       }
-      pushLiveChunk(match.event.data?.chunk, { turn: match.event.data?.turn, step: match.event.data?.step }, arrivalTime(match.event));
+      pushLiveChunk(
+        match.event.data?.chunk,
+        { turn: match.event.data?.turn, step: match.event.data?.step },
+        arrivalTime(match.event),
+        /*
+         * 同时把**宿主侧**的时刻也交出去：重排要用它算「这一批里各帧的真实间隔」
+         *（差值不受时钟基准影响，见 `pacing.ts`）。`event.time` 缺失时传 undefined，
+         * 那边会退回本地到达时刻。
+         */
+        typeof match.event.time === "number" && Number.isFinite(match.event.time) ? match.event.time : undefined,
+      );
       log(match.event, "update");
       return { chars, frames };
     },

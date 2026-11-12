@@ -20,7 +20,13 @@ export interface ChartGeometryOptions {
 
 /** 折线的几何结果。 */
 export interface ChartGeometry {
-  /** 折线 path 的 `d`。 */
+  /**
+   * 折线 path 的 `d`：**平滑曲线**（单调三次 Hermite 转三次贝塞尔）。
+   *
+   * 为什么不是 `L` 折线：用户 2026-11-13 明确要求「尽可能平滑一些，不要折线，
+   * 突然上升突然下降」。逐点连直线时，相邻两点的斜率会在每个点上突变，
+   * 看起来就是一串直角台阶。
+   */
   readonly line: string;
   /**
    * 折线下方的填充 path（闭合到基线）。
@@ -100,11 +106,90 @@ export function buildGeometry(values: readonly number[], options: ChartGeometryO
     // 没有点也要返回可用的空串，调用方可以据此跳过绘制。
     return { line: "", area: "", points: [], max };
   }
-  const line = points.map((point, index) => `${index === 0 ? "M" : "L"}${point.x} ${point.y}`).join(" ");
+  const line = smoothPath(points);
   const first = points[0]!;
   const last = points[points.length - 1]!;
   const area = `${line} L${last.x} ${round(height)} L${first.x} ${round(height)} Z`;
   return { line, area, points, max };
+}
+
+/**
+ * 把点列连成**平滑曲线**（单调三次 Hermite → 三次贝塞尔）。
+ *
+ * ## 为什么不直接用地三次样条（Catmull-Rom）
+ *
+ * 普通样条会在「急升之后立刻急降」的地方**过冲**：曲线先冲过峰值再掉回来，
+ * 画出的尖角比原来的折线还夸张。而速度序列的特点恰恰是「长时间在 0、突然一段
+ * 很高」—— 用户看到的假尖峰会被样条再放大一次。
+ *
+ * 这里用的是 Fritsch–Carlson 式的**单调保形**处理：先把每段斜率夹到
+ * `[0, 3×该段割线斜率]`（相邻割线异号时直接取 0），再把每段的两端斜率换成控制点。
+ * 效果是：数据里的极值点会变成曲线的**极值点**（不过冲），转折处也不再是直角。
+ *
+ * 每段控制点取 `dx/3`（而不是 `/6`），因为这里的 y 轴是**像素**、x 轴也是像素，
+ * 两者量纲一致，用 `1/3` 的切线长度正好让曲线在两端与切线相切。
+ * @param points - 像素坐标（x 单调递增，最旧 → 最新）。
+ * @returns SVG path（`M` + 若干 `C`）。
+ */
+function smoothPath(points: readonly { x: number; y: number }[]): string {
+  if (points.length <= 2) {
+    // 两点（或一点）没有「平滑」可言：点少时贝塞尔退化成直线，直接连。
+    return points.map((point, index) => `${index === 0 ? "M" : "L"}${point.x} ${point.y}`).join(" ");
+  }
+  /** 每段的割线斜率。 */
+  const secants: number[] = [];
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const dx = points[index + 1]!.x - points[index]!.x;
+    secants.push(dx === 0 ? 0 : (points[index + 1]!.y - points[index]!.y) / dx);
+  }
+  /** 每个点上的切线斜率（保形处理后的结果）。 */
+  const tangents: number[] = [];
+  for (let index = 0; index < points.length; index += 1) {
+    if (index === 0) {
+      tangents.push(secants[0]!);
+    } else if (index === points.length - 1) {
+      tangents.push(secants[secants.length - 1]!);
+    } else {
+      const previous = secants[index - 1]!;
+      const next = secants[index]!;
+      // 两侧异号（或有一侧是平的）→ 这里是真极值/平台，切线取 0，绝不过冲。
+      if (previous * next <= 0) tangents.push(0);
+      else tangents.push((previous + next) / 2);
+    }
+  }
+  /*
+   * 保形夹逼：任一点的切线不能超过相邻两段割线斜率的 3 倍（Fritsch–Carlson 条件）。
+   * 不夹的话「前一段很平、后一段很陡」的拐点上，曲线会冲出去再折回来。
+   */
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const secant = secants[index]!;
+    if (secant === 0) {
+      tangents[index] = 0;
+      tangents[index + 1] = 0;
+      continue;
+    }
+    const limit = 3 * secant;
+    if (limit > 0) {
+      tangents[index] = Math.min(tangents[index]!, limit);
+      tangents[index + 1] = Math.min(tangents[index + 1]!, limit);
+    } else {
+      tangents[index] = Math.max(tangents[index]!, limit);
+      tangents[index + 1] = Math.max(tangents[index + 1]!, limit);
+    }
+  }
+
+  const parts = [`M${points[0]!.x} ${points[0]!.y}`];
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const from = points[index]!;
+    const to = points[index + 1]!;
+    const third = (to.x - from.x) / 3;
+    const c1x = round(from.x + third);
+    const c1y = round(from.y + tangents[index]! * third);
+    const c2x = round(to.x - third);
+    const c2y = round(to.y - tangents[index + 1]! * third);
+    parts.push(`C${c1x} ${c1y} ${c2x} ${c2y} ${to.x} ${to.y}`);
+  }
+  return parts.join(" ");
 }
 
 /**
