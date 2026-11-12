@@ -54,6 +54,12 @@ export const SURFACE = {
    */
   boxShadow: "var(--dsw-elevation-prominent, 0 0 0 .5px var(--dsw-alias-border-l4, #d1d5db), 0 3px 8px 0 #0000000a, 0 0 20px 0 #0000000d)",
   color: "var(--dsw-alias-label-primary, #1f2328)",
+  /**
+   * 浮层容器（`shell.overlay`）对「只是显示、不接收点击」的条目通常会关掉指针事件
+   *（toast、徽标都属于这类）。我们的卡片要能点（关掉按钮、时长切换），所以**显式**
+   * 打开。显式比依赖容器默认值稳 —— 宿主改默认值时这里不会跟着失灵。
+   */
+  pointerEvents: "auto",
 } as const;
 
 /** 弹层里的次级文字色（刻度、副标题）。 */
