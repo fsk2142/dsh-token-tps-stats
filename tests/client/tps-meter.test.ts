@@ -158,6 +158,81 @@ describe("分窗平均：1 秒窗口 × 9 窗口（分母固定 9）", () => {
     expect(meter().reading(50_000)).toBeUndefined();
   });
 
+  it("**一趟扫描与「每个窗口各扫一遍」等价**（2026-11-13 的性能优化）", () => {
+    /*
+     * 优化把「每个窗口扫一遍全部桶」（9 × 约 560 桶/次读数）改成「每个桶直接算出
+     * 属于第几个窗口」（单趟）。判据等价关系：
+     *
+     * ```
+     * from < key <= to  ⟺  floor((at - key) / windowMs) === i
+     * ```
+     *
+     * 这里用一个**参照实现**（一遍遍地扫、按原判据累加）来对拍：两边的目标值
+     * 必须逐点相等。`followMs: 0` 让低通一步到位（factor = 1），这样 `reading()`
+     * 直接暴露目标值，不受 3 秒缓冲干扰。
+     * @param buckets - 毫秒桶。
+     * @param at - 读数时刻。
+     * @returns 参照实现算出的目标值。
+     */
+    const reference = (buckets: readonly (readonly [number, number])[], at: number): number | undefined => {
+      let sum = 0;
+      let anyData = false;
+      for (let index = 0; index < 9; index += 1) {
+        const from = at - (index + 1) * 1_000;
+        const to = at - index * 1_000;
+        let chars = 0;
+        for (const [key, count] of buckets) {
+          // 原来的判据：右闭左开。
+          if (key > from && key <= to) chars += count;
+        }
+        const rate = (chars / 4.2 / 1_000) * 1_000;
+        if (rate > 0) anyData = true;
+        sum += rate;
+      }
+      return anyData ? sum / 9 : undefined;
+    };
+
+    /** 一帧里有多少个 ASCII 字符（其它字符 ÷ 4.2 就是 token）。 */
+    const CASES: readonly (readonly number[])[] = [
+      [0],
+      [100],
+      [799],
+      [800],
+      [1_000],
+      [1_001],
+      [2_500, 3_100, 4_000],
+      [0, 1_000, 2_000, 3_000, 4_000, 5_000, 6_000, 7_000, 8_000],
+      [8_999],
+      [9_000],
+      [9_001],
+      [500, 9_500, 30_000],
+    ];
+    for (const offsets of CASES) {
+      const buckets: (readonly [number, number])[] = offsets.map((offset) => [1_000_000 + offset, 42]);
+      /*
+       * 读在**最后一帧之后 100ms**：这样一定在空闲宽限（800ms）内，不会走指针衰减，
+       * 读数就是纯目标值。
+       */
+      const at = 1_000_000 + Math.max(...offsets) + 100;
+      const m = createTpsMeter({ followMs: 0, idleGraceMs: 100_000 });
+      for (const [time, chars] of buckets) m.pushCounts({ cjk: 0, other: chars }, time);
+      /*
+       * 先读一次**早 1ms**：它把显示值初始化成 0（`followToward` 的首调用不跳变）。
+       * 再读 `at`：`followMs: 0` 时 factor = 1，这一次的读数就是纯目标值。
+       * 两次都在空闲宽限内，都不会走指针衰减。
+       */
+      m.reading(at - 1);
+      const actual = m.reading(at);
+      const expected = reference(buckets, at);
+      if (expected === undefined) {
+        // 没有落在窗口里的帧 → 目标值不存在，读数走衰减分支（这里当作 0）。
+        expect(actual ?? 0, `offsets=${offsets.join(",")}`).toBe(0);
+      } else {
+        expect(actual, `offsets=${offsets.join(",")}`).toBeCloseTo(expected, 9);
+      }
+    }
+  });
+
   it("**停顿期间读数往下走**（空窗按 0 计入，不是僵在高位）", () => {
     const m = meter();
     const moving = last(run(m, { from: 1_000, to: 20_000, charsAt: steady(10) }))!;

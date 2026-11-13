@@ -124,22 +124,44 @@ export function createTpsHistory(
   };
 
   /**
-   * 某一整秒边界上的滑动平均速度（最近 `smoothWindows × binMs` 内的平均）。
-   *
-   * **分母固定**为窗口长度：空桶按 0 计入。这与 `tps-meter.ts` 的第三版口径一致 ——
-   * 折线图和胶囊用同一套「最近 N 秒的平均」，否则两处会各说各话
-   *（旧实现只在有过数据的桶进分母，停顿后突然一段会把点顶到天上去）。
-   * @param boundary - 桶序号。
-   * @returns tok/s。
+   * 某一个桶的 token 数（空桶即 0）。
+   * @param index - 桶序号。
+   * @returns token 数。
    */
-  const rateAt = (boundary: number): number => {
-    let tokens = 0;
-    for (let step = 0; step < smoothWindows; step += 1) {
-      const bin = bins.get(boundary - step);
-      if (bin !== undefined) tokens += tokensOf(bin);
-    }
+  const tokensIn = (index: number): number => {
+    const bin = bins.get(index);
+    return bin === undefined ? 0 : tokensOf(bin);
+  };
+
+  /**
+   * 在「已走完的整秒」区间上滚动算出每点的滑动平均（**O(秒数 + 窗口数)**）。
+   *
+   * ## 为什么不再让每个点各自扫一遍窗口（2026-11-13 优化）
+   *
+   * 原来的 `rateAt(boundary)` 每次都 `smoothWindows` 次 `Map.get`；一屏 300 秒就是
+   * 300 × 9 = 2700 次查找，而弹层打开时每 500ms 就重画一次。滑动窗只需要
+   * 「减去滑出的那个桶、加上滑入的那个桶」—— 查找次数降到 300 + 9。
+   *
+   * 语义与原实现完全相同：`rateAt(b) = (T[b] + T[b-1] + … + T[b-w+1]) / 窗口长度`，
+   * 空桶按 0（分母固定）。
+   * @param end - 最新那个边界（已走完的整秒）。
+   * @param requested - 要几个点。
+   * @param visit - 每个点（从旧到新）的回调。
+   */
+  const forEachRate = (end: number, requested: number, visit: (secondsAgo: number, value: number) => void): void => {
     const windowMs = smoothWindows * binMs;
-    return windowMs > 0 ? (tokens / windowMs) * 1_000 : 0;
+    /** 最旧那个点的边界。 */
+    const first = end - requested + 1;
+    /** 先算出最旧点的窗口和。 */
+    let tokens = 0;
+    for (let step = 0; step < smoothWindows; step += 1) tokens += tokensIn(first - step);
+    for (let boundary = first; boundary <= end; boundary += 1) {
+      if (boundary > first) {
+        // 滑动一格：加进新桶，减去滑出窗口的那个桶。
+        tokens += tokensIn(boundary) - tokensIn(boundary - smoothWindows);
+      }
+      visit(end - boundary, windowMs > 0 ? (tokens / windowMs) * 1_000 : 0);
+    }
   };
 
   /** 造「最旧 → 最新」的点列（结尾落在最后一个已走完的整秒）。 */
@@ -148,9 +170,9 @@ export function createTpsHistory(
     prune(end);
     const requested = Math.max(1, Math.floor(seconds));
     const points: TpsSeriesPoint[] = [];
-    for (let ago = requested - 1; ago >= 0; ago -= 1) {
-      points.push({ secondsAgo: ago, value: rateAt(end - ago) });
-    }
+    forEachRate(end, requested, (secondsAgo, value) => {
+      points.push({ secondsAgo, value });
+    });
     return points;
   };
 
@@ -164,16 +186,25 @@ export function createTpsHistory(
       accumulate(counts, at);
     },
     series: (at, seconds) => pointsAt(at, seconds),
+    /*
+     * 统计值**不建点列**：弹层每 500ms 重画一次，`series()` 那 300 个对象只是为
+     * 了求平均/峰值/最新 —— 顺手在这一趟滑动窗里算掉（2026-11-13 优化）。
+     */
     summary: (at, seconds) => {
-      const points = pointsAt(at, seconds);
+      const end = binIndexOf(at);
+      prune(end);
+      const requested = Math.max(1, Math.floor(seconds));
       let sum = 0;
       let peak = 0;
-      for (const point of points) {
-        sum += point.value;
-        if (point.value > peak) peak = point.value;
-      }
-      const latest = points.length > 0 ? points[points.length - 1]!.value : 0;
-      return { average: points.length > 0 ? sum / points.length : 0, peak, latest };
+      let latest = 0;
+      let count = 0;
+      forEachRate(end, requested, (_secondsAgo, value) => {
+        sum += value;
+        if (value > peak) peak = value;
+        latest = value;
+        count += 1;
+      });
+      return { average: count > 0 ? sum / count : 0, peak, latest };
     },
   };
 }

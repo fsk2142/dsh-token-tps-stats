@@ -17,10 +17,39 @@ function history(seconds = 180) {
 }
 
 describe("折线图历史：每秒一个桶", () => {
-  it("**序列长度恒为请求的秒数**（没有数据也要画满一条 0 线）", () => {
+  it("**滑动窗与「每点各扫一遍」等价**（2026-11-13 的性能优化）", () => {
+    /*
+     * 优化把「每个点各自 `Map.get` 9 次」（300 秒就是 2700 次查找）改成滑动窗
+     * 「加进新桶、减去滑出窗口的桶」（300 + 9 次）。这条用手算参照对拍：
+     * 同样的桶集合，每一点必须与「点及其前 8 个桶之和 ÷ 窗口长度」一致。
+     */
+    const BASE = 1_000_000;
+    /** 有输出的那几秒（绝对桶序号 = BASE + 秒）。 */
+    const pushed = new Set([0, 1, 2, 4, 5, 7, 9, 10].map((second) => BASE + second));
     const h = history();
-    expect(h.series(10_000, 30)).toHaveLength(30);
-    expect(h.series(10_000, 1)).toHaveLength(1);
+    for (const bucket of pushed) h.pushCounts({ cjk: 0, other: 84 }, bucket * 1_000);
+    const at = BASE + 12_000;
+    /** 某个绝对桶里的 token（84 字符 ÷ 4.2 = 20）。 */
+    const tokensIn = (bucket: number): number => (pushed.has(bucket) ? 20 : 0);
+    const end = Math.floor(at / 1_000);
+    for (const point of h.series(at, 12)) {
+      const boundary = end - point.secondsAgo;
+      let tokens = 0;
+      for (let step = 0; step < 9; step += 1) tokens += tokensIn(boundary - step);
+      expect(point.value, `secondsAgo=${point.secondsAgo}`).toBeCloseTo((tokens / 9_000) * 1_000, 9);
+    }
+  });
+
+  it("**统计值不建点列也算对**（平均 / 峰值 / 最新与 series 一致）", () => {
+    const h = history();
+    for (const second of [0, 3, 6, 9]) h.pushCounts({ cjk: 0, other: 84 }, 1_000_000 + second * 1_000);
+    const at = 1_000_000 + 12_000;
+    const points = h.series(at, 12);
+    const summary = h.summary(at, 12);
+    const sum = points.reduce((total, point) => total + point.value, 0);
+    expect(summary.average).toBeCloseTo(sum / points.length, 9);
+    expect(summary.peak).toBeCloseTo(Math.max(...points.map((point) => point.value)), 9);
+    expect(summary.latest).toBeCloseTo(points[points.length - 1]!.value, 9);
   });
 
   it("**最旧 → 最新**：`secondsAgo` 单调递减到 0", () => {

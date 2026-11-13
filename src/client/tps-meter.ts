@@ -328,10 +328,35 @@ export function createTpsMeter(
    * @returns 估算 tok/s；最近一帧已超出宽限（判定为停）或完全没有数据时 `undefined`。
    */
   const windowedRate = (at: number): number | undefined => {
-    /** 最近一次收到帧的时刻（判断是否还在流）。 */
+    /*
+     * **一趟扫描同时算 9 个窗口**（2026-11-13 优化）。
+     *
+     * 原来是「9 个窗口各自扫一遍全部桶」：流式时按毫秒存桶，9 秒大约 560 个桶，
+     * 一次读数就是 9 × 560 ≈ 5000 次迭代，而读数每 100ms 一次 —— 约 5 万次/秒。
+     * 现在对每个桶**直接算出它属于第几个窗口**，一趟累加完。
+     *
+     * 判据与原实现等价（原来写的是 `from < key <= to`，`from = at-(i+1)·windowMs`）：
+     *
+     * ```
+     * key > from  ⟺  at-key <  (i+1)·windowMs
+     * key <= to   ⟺  at-key >=  i   ·windowMs
+     * ⇒ i·windowMs <= at-key < (i+1)·windowMs  ⟺  floor((at-key)/windowMs) === i
+     * ```
+     *
+     * 「最近一帧」也顺手在这一趟里取，省掉另一次遍历。
+     */
     let latest: number | undefined;
-    for (const key of buckets.keys()) {
+    const windowCjk = new Float64Array(windows);
+    const windowOther = new Float64Array(windows);
+    for (const [key, slice] of buckets) {
       if (latest === undefined || key > latest) latest = key;
+      const delta = at - key;
+      // 未来帧（时钟回拨 / 摊开算错）不属于任何窗口，只参与「最近一帧」判断。
+      if (delta < 0) continue;
+      const index = Math.floor(delta / windowMs);
+      if (index >= windows) continue;
+      windowCjk[index] += slice.cjk;
+      windowOther[index] += slice.other;
     }
     /*
      * **空闲判断**：`settle` 之后，或最后一批帧距今超过宽限时间 → 交给指针衰减，
@@ -342,24 +367,7 @@ export function createTpsMeter(
     let sum = 0;
     let anyData = false;
     for (let index = 0; index < windows; index += 1) {
-      const from = at - (index + 1) * windowMs;
-      const to = at - index * windowMs;
-      let cjk = 0;
-      let other = 0;
-      for (const [key, slice] of buckets) {
-        /*
-         * **右闭左开**：`from < key <= to`。
-         *
-         * 第一版写成 `key >= from && key < to`，于是「帧时间正好等于 now」的那一帧
-         * 落在所有窗口之外 —— 读数直接变成 undefined。这在真机上就是
-         * 「刚打完字数字闪一下又没了」。窗口必须把当前时刻包含进去。
-         */
-        if (key > from && key <= to) {
-          cjk += slice.cjk;
-          other += slice.other;
-        }
-      }
-      const windowed = tokensOf({ cjk, other });
+      const windowed = tokensOf({ cjk: windowCjk[index]!, other: windowOther[index]! });
       if (windowed > 0) anyData = true;
       // **空窗按 0 计入**（累加 0 只是为了让分母保持固定）。
       sum += (windowed / windowMs) * 1_000;

@@ -360,8 +360,21 @@ interface TimeView {
  */
 function timeSeriesOf(stream: SessionStream | undefined, now: number, seconds: TpsChartRange): TimeView {
   const points = stream === undefined ? [] : stream.history.series(now, seconds);
+  /*
+   * **统计值直接在这批点上算**（2026-11-13 优化）。
+   *
+   * 原来 `history.series()` 和 `history.summary()` 各算一遍滑动窗：弹层每 500ms
+   * 重画一次，300 秒那一档等于每半秒白算 300 个点。而 `series()` 已经把每个点的
+   * 值给出来了 —— 平均/峰值/最新就是它们的 sum / max / 最后一项。
+   */
   const summary: TpsSeriesSummary =
-    stream === undefined ? { average: 0, peak: 0, latest: 0 } : stream.history.summary(now, seconds);
+    points.length === 0
+      ? { average: 0, peak: 0, latest: 0 }
+      : {
+          average: points.reduce((total, point) => total + point.value, 0) / points.length,
+          peak: points.reduce((peak, point) => (point.value > peak ? point.value : peak), 0),
+          latest: points[points.length - 1]!.value,
+        };
   const scale = axisScale(summary.peak);
   const geometry = buildGeometry(
     points.map((point) => point.value),
