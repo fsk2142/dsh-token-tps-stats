@@ -158,7 +158,7 @@ export function pushNodes(entry: SessionStream, nodes: unknown): void {
   if (!Array.isArray(nodes)) return;
   for (const node of nodes as readonly unknown[]) {
     if (typeof node !== "object" || node === null) continue;
-    const record = node as { kind?: unknown; turn?: unknown; step?: unknown; usage?: unknown };
+    const record = node as { kind?: unknown; turn?: unknown; step?: unknown; usage?: unknown; timing?: unknown };
     if (record.kind !== "assistant") continue;
     if (typeof record.turn !== "number" || typeof record.step !== "number") continue;
     const usage = record.usage as { [key: string]: unknown } | null | undefined;
@@ -170,8 +170,31 @@ export function pushNodes(entry: SessionStream, nodes: unknown): void {
       cacheWriteTokens: countOf(usage.cacheWriteTokens),
       reasoningTokens: countOf(usage.reasoningTokens),
       totalTokens: countOf(usage.totalTokens),
+      generationMs: generationMsOf(record.timing),
     });
   }
+}
+
+/**
+ * 从宿主节点的 `timing` 折出「这一步真正在生成」的时长。
+ *
+ * 宿主给的是三个墙钟时刻：`stepStartTime`（步开始，含等工具）、`firstTokenTime`
+ * （第一个 token 到达）、`completedTime`（生成结束）。
+ *
+ * 用 `completedTime − firstTokenTime` 而不是 `completedTime − stepStartTime`：
+ * 前者才是**模型在吐字**的那一段，后者会把「等工具返回」也算进来 —— 那正是我们
+ * 在 `step-history.ts` 里一直躲着的失真。
+ * @param timing - 宿主节点上的 `timing`。
+ * @returns 毫秒；字段缺失或倒挂时 `undefined`。
+ */
+function generationMsOf(timing: unknown): number | undefined {
+  if (typeof timing !== "object" || timing === null) return undefined;
+  const record = timing as { firstTokenTime?: unknown; completedTime?: unknown };
+  const first = countOf(record.firstTokenTime);
+  const done = countOf(record.completedTime);
+  if (first === undefined || done === undefined) return undefined;
+  const span = done - first;
+  return span > 0 ? span : undefined;
 }
 
 /**

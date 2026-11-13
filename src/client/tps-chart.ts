@@ -54,14 +54,20 @@ import {
   type ChartTab,
 } from "./chart-store";
 import type { DshEvent } from "./dom";
-import { formatPercent, formatRate, formatTokens } from "./format";
+import { formatRatio, formatRate, formatTokens } from "./format";
 import type { SessionStream } from "./session-store";
 import { TPS_STEP_RANGES, type StepRow, type TpsStepRange } from "./step-history";
 import { HAIRLINE, INK, INK_STRONG, SURFACE, TYPO } from "./styles";
 import { TPS_CHART_RANGES, type TpsChartRange, type TpsSeriesSummary } from "./tps-history";
 
-/** 弹层宽度（像素）：一个页签独占整宽，比并列时窄一点也看得清。 */
-const PANEL_WIDTH = 344;
+/**
+ * 弹层宽度（像素）。
+ *
+ * 2026-11-13 用户看过真机后要求「这个弹窗框可以再宽一些」：344px 时「每步」那张表
+ * 六列挤在一起（读取/输入都是六位数的千分位数字，需要宽度才读得清）。
+ * 440px = 内容宽 416px，正好放得下六列 + 折线图的留白。
+ */
+const PANEL_WIDTH = 440;
 
 /** 弹层内边距（像素）：左右各 12px。 */
 const PANEL_PADDING_X = 12;
@@ -85,11 +91,13 @@ const SVG_WIDTH = PANEL_WIDTH - 2 * PANEL_PADDING_X;
 const SVG_HEIGHT = 118;
 
 /**
- * 「每步」表格的列宽：步 / 输出 / 输入 / 命中 / 平均。
+ * 「每步」表格的列宽：步 · 读取 · 输入 · 输出 · 命中 · 速度。
  *
  * 用固定像素而不是 `1fr`：数字列要等宽对齐，`1fr` 会把位数不同的行错开。
+ * 六列 396px + 5 个 4px 间隙 = **416px**（= 弹层内容宽），正好铺满。
+ * 读取/输入可能有六位数的千分位，所以给得最多。
  */
-const STEP_GRID = "34px 52px 58px 44px 66px";
+const STEP_GRID = "40px 80px 80px 64px 48px 84px";
 
 /** 弹层与胶囊之间的间距（像素）。 */
 const PANEL_GAP = 8;
@@ -363,10 +371,19 @@ function timeSeriesOf(stream: SessionStream | undefined, now: number, seconds: T
 /**
  * 渲染「每步」这一页：**一张表**，每行一步。
  *
- * 用户 2026-11-13 明确说这里不要折线：
+ * 用户 2026-11-13 两次明确要求，这里不要折线：
  *
  * > 每步平均这里不用按照折线图显示，直接列出来第一步，输出多少，输入多少，
  * > 命中多少，平均速率多少，这样子
+ *
+ * 随后定了**列的顺序与简称**：
+ *
+ * > 应该先是缓存读取、未缓存输入、输出、缓存命中、平均速度，
+ * > 但是都用简写：读取 / 输入 / 输出 / 命中 / 速度。
+ *
+ * 所以列是：步 · 读取 · 输入 · 输出 · 命中 · 速度。
+ * 「读取」= `cacheReadTokens`，「输入」= `inputTokens`（**未缓存**那部分，
+ * 不是 `total − output` —— 那会把缓存算进来）；「命中」= 读取 ÷（读取 + 输入 + 写入）。
  *
  * 列宽用固定像素（数字列右对齐 + 等宽数字），行与行才对齐得起来；
  * 拿不到的字段显示 `—`，不拿估算值假装成账单。
@@ -381,7 +398,7 @@ function renderStepTable(rows: readonly StepRow[], steps: TpsStepRange): ReactEl
       style: {
         display: "grid",
         gridTemplateColumns: STEP_GRID,
-        gap: "0 6px",
+        gap: "0 4px",
         padding: "0 0 3px",
         fontSize: "11px",
         lineHeight: "16px",
@@ -389,10 +406,11 @@ function renderStepTable(rows: readonly StepRow[], steps: TpsStepRange): ReactEl
       },
     },
     createElement("span", null, "步"),
-    createElement("span", { style: { textAlign: "end" } }, "输出"),
+    createElement("span", { style: { textAlign: "end" } }, "读取"),
     createElement("span", { style: { textAlign: "end" } }, "输入"),
+    createElement("span", { style: { textAlign: "end" } }, "输出"),
     createElement("span", { style: { textAlign: "end" } }, "命中"),
-    createElement("span", { style: { textAlign: "end" } }, "平均"),
+    createElement("span", { style: { textAlign: "end" } }, "速度"),
   );
 
   const body = rows.map((row, index) =>
@@ -403,7 +421,7 @@ function renderStepTable(rows: readonly StepRow[], steps: TpsStepRange): ReactEl
         style: {
           display: "grid",
           gridTemplateColumns: STEP_GRID,
-          gap: "0 6px",
+          gap: "0 4px",
           padding: "2px 0",
           fontSize: "11px",
           lineHeight: "16px",
@@ -413,14 +431,13 @@ function renderStepTable(rows: readonly StepRow[], steps: TpsStepRange): ReactEl
         },
       },
       createElement("span", { style: { whiteSpace: "nowrap" } }, `#${row.turn}.${row.step}`),
-      createElement("span", { style: { textAlign: "end", whiteSpace: "nowrap" } }, formatTokens(row.outputTokens)),
+      createElement("span", { style: { textAlign: "end", whiteSpace: "nowrap" } }, formatTokens(row.cacheReadTokens)),
       createElement("span", { style: { textAlign: "end", whiteSpace: "nowrap" } }, formatTokens(row.inputTokens)),
+      createElement("span", { style: { textAlign: "end", whiteSpace: "nowrap" } }, formatTokens(row.outputTokens)),
       createElement(
         "span",
         { style: { textAlign: "end", whiteSpace: "nowrap" } },
-        row.cachedTokens === undefined || row.inputTokens === undefined
-          ? "—"
-          : formatPercent(row.cachedTokens, row.inputTokens),
+        row.hitRatio === undefined ? "—" : formatRatio(row.hitRatio),
       ),
       createElement(
         "span",
@@ -460,7 +477,9 @@ function renderStepTable(rows: readonly StepRow[], steps: TpsStepRange): ReactEl
           marginBottom: "4px",
         },
       },
-      rows.length === 0 ? "还没有完成的步骤" : "输出/输入/命中是宿主的真实用量；平均速率按「有字在流」的时长算",
+      rows.length === 0
+        ? "还没有完成的步骤"
+        : "读取/输入/输出是宿主的真实用量；命中 = 读取 ÷ 提示总量；速度按「在生成」的时长算",
     ),
     header,
     body.length === 0

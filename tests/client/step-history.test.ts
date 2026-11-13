@@ -21,9 +21,10 @@ describe("步账：真实用量优先", () => {
     ledger.settle(1, 1, { inputTokens: 120, outputTokens: 300, cacheReadTokens: 900, totalTokens: 1_320 });
     const [row] = ledger.rows(5);
     expect(row?.outputTokens).toBe(300);
-    // 输入 = 总量 − 输出（含缓存读取与写入）。
-    expect(row?.inputTokens).toBe(1_020);
-    expect(row?.cachedTokens).toBe(900);
+    expect(row?.inputTokens).toBe(120);
+    expect(row?.cacheReadTokens).toBe(900);
+    // 命中率 = 读取 ÷（读取 + 输入 + 写入）= 900 ÷ 1020。
+    expect(row?.hitRatio).toBeCloseTo(900 / 1_020, 6);
     expect(row?.measured).toBe(true);
   });
 
@@ -62,6 +63,27 @@ describe("步账：平均速率", () => {
   });
 
   it("**量不到时长时 `speed` 是 `undefined`**（列表据此显示 `—`，不拿墙钟凑数）", () => {
+    const ledger = createStepHistory();
+    ledger.settle(1, 1, { outputTokens: 300, totalTokens: 1_000 });
+    expect(ledger.rows(1)[0]?.speed).toBeUndefined();
+  });
+
+  it("**没有观察到流式时退回宿主的 `timing`**（页面在步骤结束后才挂上也能量出速度）", () => {
+    const ledger = createStepHistory();
+    ledger.settle(1, 1, { outputTokens: 600, totalTokens: 2_000, generationMs: 2_000 });
+    // 600 token / 2 秒 = 300 tok/s。
+    expect(ledger.rows(1)[0]?.speed).toBeCloseTo(300, 6);
+  });
+
+  it("自己观察到的时长**优先于** `timing`（前者更贴近实际流式）", () => {
+    const ledger = createStepHistory();
+    ledger.add("1:1", 1, 1, 300, 1_000);
+    ledger.settle(1, 1, { outputTokens: 300, totalTokens: 1_000, generationMs: 10_000 });
+    // 用 1 秒（观察值），不是 10 秒（timing）→ 300 tok/s。
+    expect(ledger.rows(1)[0]?.speed).toBeCloseTo(300, 6);
+  });
+
+  it("两者都没有 → `—`", () => {
     const ledger = createStepHistory();
     ledger.settle(1, 1, { outputTokens: 300, totalTokens: 1_000 });
     expect(ledger.rows(1)[0]?.speed).toBeUndefined();

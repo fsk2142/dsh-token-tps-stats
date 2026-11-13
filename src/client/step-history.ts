@@ -6,8 +6,12 @@
  * > 每步平均这里不用按照折线图显示，直接列出来第一步，输出多少，输入多少，
  * > 命中多少，平均速率多少，这样子
  *
- * 所以这里收的是**每一步的一行账**：真实 token 用量（来自宿主的 `usage`）加上
- * 一个我们量出来的平均速率 —— 而不是一串要点在折线图上的采样。
+ * 随后又明确了**列的顺序与简称**：
+ *
+ * > 应该先是缓存读取、未缓存输入、输出、缓存命中、平均速度，
+ * > 但是都用简写：读取 / 输入 / 输出 / 命中 / 速度。
+ *
+ * 所以一行是：步号 · 读取 · 输入 · 输出 · 命中 · 速度。
  *
  * ## 两种数据、两个来源
  *
@@ -15,14 +19,16 @@
  *    （`inputTokens` / `outputTokens` / `cacheReadTokens` / `cacheWriteTokens` /
  *    `reasoningTokens` / `totalTokens`）。这是**真实数字**，不是估算 ——
  *    列表里显示的就是账单上的数。
- * 2. **平均速率**：用量里没有时长，所以用流式期间量到的「有字在流的时间」
- *    （`activeMs`）作分母。没观察到这段（例如页面在步骤结束后才挂上）就如实
- *    显示 `—`，**不拿墙钟凑数** —— 一步里含工具调用，墙钟会把平均值压得很低，
- *    那种数字没有意义。
+ * 2. **速度**：用量里没有时长。两个来源，按可靠程度排：
+ *    - 我们自己观察到的「有字在流」时长（`activeMs`，页面在流式期间就挂上时有）；
+ *    - 宿主节点上的 `timing`（`completedTime − firstTokenTime` = 这一步真正在生成
+ *      的那段时间，含工具参数生成，不含等工具返回）。
+ *    两个都没有就显示 `—`，**不拿墙钟凑数** —— 一步里含工具调用，把等待算进
+ *    分母会让平均值低得没有意义。
  *
  * ## 为什么单次间隔封顶、时长有下限
  *
- * 主线程被占住几秒后一次交付一大段，不封顶会把「那一段」算成很长的流式时间；
+ * 主线程被占住几秒后一次交付一大段，不封顶会让那一段被算成很长的流式时间；
  * 而全部字恰好落在同一帧里时长又会接近 0，除出天文数字。封顶 2 秒 + 下限 500
  * 毫秒的结果是**分母只可能偏大、读数只可能偏低** —— 宁可少报，不出假峰值
  * （用户为「偶尔冲到 300 多」专门提过一次）。
@@ -50,7 +56,12 @@ const MIN_DURATION_MS = 500;
 
 /** 一步的真实用量（字段名与宿主 `usage` 完全一致，不另外造词）。 */
 export interface StepUsage {
-  /** 未命中缓存的输入 token。 */
+  /**
+   * **未缓存输入** token（宿主 `inputTokens`）。
+   *
+   * 注意它**不含**缓存读取：宿主把「命中缓存的部分」单独放在 `cacheReadTokens`。
+   * 所以「输入」这一列读它，而不是 `totalTokens − outputTokens`（后者含缓存）。
+   */
   readonly inputTokens?: number;
   /** 输出 token。 */
   readonly outputTokens?: number;
@@ -62,6 +73,13 @@ export interface StepUsage {
   readonly reasoningTokens?: number;
   /** 总 token。 */
   readonly totalTokens?: number;
+  /**
+   * 这一步真正在生成的时长（毫秒），由宿主节点的 `timing` 折算：
+   * `completedTime − firstTokenTime`。
+   *
+   * 不含「等工具返回」那段 —— 所以比墙钟可信。
+   */
+  readonly generationMs?: number;
 }
 
 /** 列表里的一行（按**最新在前**排）。 */
@@ -70,13 +88,15 @@ export interface StepRow {
   readonly turn: number;
   /** 步数（这一轮里的第几步）。 */
   readonly step: number;
-  /** 输出 token（有真实用量就用它，否则用流式期间的估算）。 */
-  readonly outputTokens: number;
-  /** 输入 token（含缓存读取与写入）；没有用量时 `undefined`。 */
+  /** **读取**：缓存读取的 token；没有用量时 `undefined`。 */
+  readonly cacheReadTokens: number | undefined;
+  /** **输入**：未缓存的输入 token；没有用量时 `undefined`。 */
   readonly inputTokens: number | undefined;
-  /** 命中的 token（缓存读取）；没有用量时 `undefined`。 */
-  readonly cachedTokens: number | undefined;
-  /** 平均速率（tok/s）；量不到时长时 `undefined`。 */
+  /** **输出**：输出 token（有真实用量就用它，否则用流式期间的估算）。 */
+  readonly outputTokens: number;
+  /** **命中**：缓存读取占整个提示（读取 + 输入 + 写入）的比例；算不出时 `undefined`。 */
+  readonly hitRatio: number | undefined;
+  /** **速度**：平均速率（tok/s）；量不到时长时 `undefined`。 */
   readonly speed: number | undefined;
   /** 是否拿到了真实用量（`false` = 这一行是流式期间估出来的）。 */
   readonly measured: boolean;
@@ -116,7 +136,7 @@ interface Draft {
   readonly step: number;
   /** 流式期间估出来的 token（真实用量到达前的兜底）。 */
   estimatedTokens: number;
-  /** 有字在流的总时长（毫秒，已截断）。 */
+  /** 观察到「有字在流」的总时长（毫秒，已截断）。 */
   activeMs: number;
   /** 拿到真实用量后填上。 */
   usage: StepUsage | undefined;
@@ -169,28 +189,37 @@ export function createStepHistory(): StepHistory {
       const requested = Math.max(1, Math.floor(count));
       const list = [...drafts.values()].slice(-requested).reverse();
       return list.map((draft) => {
-        const outputTokens = draft.usage?.outputTokens ?? draft.estimatedTokens;
-        const total = draft.usage?.totalTokens;
-        const output = draft.usage?.outputTokens;
-        const inputTokens = total !== undefined && output !== undefined ? Math.max(0, total - output) : undefined;
+        const usage = draft.usage;
+        const outputTokens = usage?.outputTokens ?? draft.estimatedTokens;
         /*
-         * 只有**真的观察到过流式**（`estimatedTokens > 0`）才谈得上速率：
-         * 页面在步骤结束后才挂上时一个 delta 都没见过，那时长就是未知，给 `undefined`
-         * 让列表显示 `—`，而不是拿 0 或墙钟凑一个数。
-         *
-         * 观察到过就给下限兜底 —— 全部字恰好落在同一毫秒里时 `activeMs` 是 0，
-         * 直接除会得到无穷大。
+         * 提示总量 = 读取 + 未缓存输入 + 写入。用它算命中率，而不是
+         * `totalTokens − outputTokens` —— 后者在 `totalTokens` 缺省或有其它
+         * 组成项时会对不上，前者的定义是我们自己拼得出来的。
          */
-        const observed = draft.estimatedTokens > 0;
-        const durationMs = observed ? Math.max(draft.activeMs, MIN_DURATION_MS) : undefined;
+        const prompt =
+          (usage?.cacheReadTokens ?? 0) + (usage?.inputTokens ?? 0) + (usage?.cacheWriteTokens ?? 0);
+        const hitRatio = usage?.cacheReadTokens === undefined || prompt <= 0 ? undefined : usage.cacheReadTokens / prompt;
+        /*
+         * 时长优先用**我们自己观察到的**流式时间；没观察到（页面在步骤结束后才挂上）
+         * 就退回宿主的 `timing`：`completedTime − firstTokenTime`，那才是「在生成」的
+         * 那一段，不含等工具返回。
+         *
+         * 「观察到」的判据是 `estimatedTokens > 0`（见过 delta），不是
+         * `activeMs >= 下限`：全部字恰好落在同一毫秒里时 `activeMs` 就是 0，
+         * 那仍然是**观察到了**，该按下限兜底而不是判成「未知」。
+         */
+        const observed = draft.estimatedTokens > 0 ? Math.max(draft.activeMs, MIN_DURATION_MS) : undefined;
+        const generation = usage?.generationMs;
+        const durationMs = observed ?? (generation !== undefined && generation > 0 ? generation : undefined);
         return {
           turn: draft.turn,
           step: draft.step,
+          cacheReadTokens: usage?.cacheReadTokens,
+          inputTokens: usage?.inputTokens,
           outputTokens,
-          inputTokens,
-          cachedTokens: draft.usage?.cacheReadTokens,
+          hitRatio,
           speed: durationMs === undefined ? undefined : (outputTokens / durationMs) * 1_000,
-          measured: draft.usage !== undefined,
+          measured: usage !== undefined,
           running: draft.stream === current && !draft.settled,
         };
       });

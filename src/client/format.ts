@@ -48,12 +48,26 @@ export function formatTokens(value: number | undefined): string {
 /**
  * 把比例格式化成百分比（**整数**）。
  * @param numerator - 分子（例如命中的缓存 token）。
- * @param denominator - 分母（例如输入总量）；非正数时返回 `"—"`。
+ * @param denominator - 分母（例如提示总量）；非正数时返回 `"—"`。
  * @returns 例如 `"97%"`。
  */
 export function formatPercent(numerator: number | undefined, denominator: number | undefined): string {
   if (denominator === undefined || !Number.isFinite(denominator) || denominator <= 0) return "—";
   if (numerator === undefined || !Number.isFinite(numerator)) return "—";
   const percent = Math.round((numerator / denominator) * 100);
+  return `${Math.min(100, Math.max(0, percent))}%`;
+}
+
+/**
+ * 把**已经算好的比例**（0~1）格式化成百分比。
+ *
+ * 与 {@link formatPercent} 分开是因为调用方常常已经除过了（例如「读取 ÷ 提示总量」），
+ * 再传一对分子分母只会让读代码的人怀疑自己看错。
+ * @param ratio - 比例（0~1）；缺省时返回 `"—"`。
+ * @returns 例如 `"97%"`。
+ */
+export function formatRatio(ratio: number | undefined): string {
+  if (ratio === undefined || !Number.isFinite(ratio)) return "—";
+  const percent = Math.round(ratio * 100);
   return `${Math.min(100, Math.max(0, percent))}%`;
 }

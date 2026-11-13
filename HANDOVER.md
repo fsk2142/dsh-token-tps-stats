@@ -14,7 +14,7 @@
 ```
 
 **点一下胶囊** → 在它正上方弹出图表，左上角两个页签：**实时速度**（1/3/5 分钟折线）
-与**每步输出**（5/10/20 步的列表：输出 / 输入 / 命中 / 平均速率）。
+与**每步输出**（5/10/20 步的表格：读取 · 输入 · 输出 · 命中 · 速度）。
 
 它**只做这一件事**：不读账号、不读额度、不碰任何厂商配置、不发网络请求。
 
@@ -26,8 +26,8 @@
 | 远端 | `git@github.com:fsk2142/dsh-token-tps-stats.git` |
 | 版本 | `1.0.0` |
 | `tsc` | 干净 |
-| 单测 | **145 条全绿**（`tps-meter` 23 / `tps-history` 9 / `chart-geometry` 20 / `chart-store` 13 / `session-store` 20 / `step-history` 15 / `label` 7 / `install` 9 / `pacing` 11 / `live-buffer` 5 / `format` 10 / `replay-regression` 2），另有 `pnpm test:bundle` 用带 `this` 语义的假宿主跑构建产物 |
-| 构建 | 成功（`lib/client.js` **21.8 KB**（minify 后）/ gzip 8.1 KB；`lib/index.js` 1.7 KB） |
+| 单测 | **148 条全绿**（`tps-meter` 23 / `tps-history` 9 / `chart-geometry` 20 / `chart-store` 13 / `session-store` 20 / `step-history` 18 / `label` 7 / `install` 9 / `pacing` 11 / `live-buffer` 5 / `format` 10 / `replay-regression` 2），另有 `pnpm test:bundle` 用带 `this` 语义的假宿主跑构建产物 |
+| 构建 | 成功（`lib/client.js` **22.2 KB**（minify 后）/ gzip 8.2 KB；`lib/index.js` 1.7 KB） |
 | 装进 profile | **已装**（`desktop` profile，`file:` 链接到本目录；宿主读的就是 `lib/client.js`） |
 | 真机槽位 | `conversation.composer.dock` → `token-tps-stats`（order -1）；`shell.overlay` → `token-tps-stats-chart` |
 
@@ -37,7 +37,7 @@
 | --- | --- | --- |
 | `src/client/session-store.ts` | **每会话一份状态**：按 `sessionId` 认领 `{meter, history, steps, baseline, sampledAt}`；`pushSnapshot` 吃一拍 `legacy.partial`（差分 + 摊开 + 累加），`pushNodes` 把已完成节点的真实 `usage` 记进步账。**这是「各算各的」的关键文件** | 中（有单测） |
 | `src/client/label.ts` | **胶囊那行字**：固定前缀 + 定宽数字 + 单位，以及对应的无障碍文案（只有「输出文本的速度」一个语义） | 低（有单测） |
-| `src/client/step-history.ts` | **每步的一行账**（弹窗第二个页签）：按 `turn:step` 收真实 `usage` 与「有字在流」的时长；单次间隔封顶 2 秒、时长下限 500 毫秒，保留最近 40 步 | 低（有单测） |
+| `src/client/step-history.ts` | **每步的一行账**（弹窗第二个页签）：按 `turn:step` 收真实 `usage` 与「有字在流」的时长；单次间隔封顶 2 秒、时长下限 500 毫秒，保留最近 40 步。时长拿不到时退回宿主节点的 `timing` | 低（有单测） |
 | `src/client/progress.ts` | **差分**：块文本提取（只认 text/reasoning）、`newTextSince`（无基线/换流/重试一律不产字符，幂等） | 低（有单测） |
 | `src/client/spread.ts` | **摊开**：把一拍的字符按两次采样的真实时间差分到秒片上（守恒、零头进最后一片） | 低（有单测） |
 | `src/client/pacing.ts` | **旧的时间轴重排**（按宿主时间戳差铺回）。**当前链路已不再调用**，只被 `live-buffer.ts` 与两个单测引用；留着是因为它是「积压 992 tok/s」那次事故的证据与备选方案 | 低（有单测） |
@@ -47,9 +47,9 @@
 | `src/client/chart-geometry.ts` | **折线几何**：`axisScale`（阶梯 1/2/5/10/25/50/100/250…，108→150）、`axisTicks`（整数）、**保形平滑曲线**（单调三次 Hermite → 贝塞尔，不过冲） | 低（有单测） |
 | `src/client/chart-store.ts` | **弹层开关状态**：胶囊与弹层不共享 React 树，靠它交换「开没开 / 锚点 / 时长 / **看哪个会话**」；还存胶囊 DOM 元素供读当前矩形 | 低（有单测） |
 | `src/client/styles.ts` | **共享排版与表面**：官方胶囊那套字号/行高变量、弹层的白底 + elevation 阴影、文字与折线同色令牌 | 低 |
-| `src/client/format.ts` | `formatRate`（**一律取整**，用户 2026-11-13 要求不要小数） | 低 |
+| `src/client/format.ts` | `formatRate`（**一律取整**）、`formatTokens`（千分位）、`formatPercent` / `formatRatio`（整数百分比） | 低（有单测） |
 | `src/client/tps-pill.ts` | **胶囊**：官方同款内联样式 + 仪表图标 + 点开弹层（带上**本会话**那份状态）+ **定宽数字**；数据从 `useChat` 槽位属性读 | 中（样式改动要靠真机看） |
-| `src/client/tps-chart.ts` | **弹层**：`shell.overlay` + `position: fixed`，折线图 + 时长切换 + Esc/点外面关闭；历史来自 `chart-store` 里那份会话状态 | 中 |
+| `src/client/tps-chart.ts` | **弹层**：`shell.overlay` + `position: fixed`，左上角两个页签（实时速度折线 / 每步输出表格）+ 档位切换 + Esc/点外面关闭；数据来自 `chart-store` 里那份会话状态 | 中 |
 | `src/client/install.ts` | **注册**：嵌套注入 `slots`，再用 `slots.inject` 等声明提交——**不直接 `register`**（直接注册在重启后会报 `slot "…" is not declared`）；注册胶囊与弹层（**不再注册事件定义**） | **高**（见下面「不能碰的边界」） |
 | `src/client/dom.d.ts` | `window` 的最小手写声明（**只为它**，不引整套 DOM 类型） | 低 |
 | `src/client/react.d.ts` | react 的最小类型声明（宿主提供，本地不装） | 低 |
@@ -77,7 +77,9 @@
 | 「统计的是每个会话自己的速度，怎么是全局的会话速度」（2026-11-13） | 根因：`uiConversation.events` 的注册表**全局共享**（键是 kind，重复注册直接抛），每个会话各有一个装配器把同一个 Definition 拿去匹配自己那份事件流 → 所有会话（含子代理）的字被加进同一个模块级累加器；而 `assistant/live-chunk` 的载荷里**没有会话 id**，从回调分不出来。数据源改成**槽位标准属性**：dock 是 `scope: "session"`，`useChat` 返回的就是当前会话的聊天快照（官方那两个胶囊读的同一份）。新增 `session-store.ts`（每会话一份，按 `sessionId` 认领）、`progress.ts`（累计文本做差分，幂等）、`spread.ts`（按采样时间差摊开）。一次性的全局 `tps-meter`/`tps-history` 单例入口就此删除 |
 | 「现在这个速度是纯输出的速度吗？」（2026-11-13） | 是「正文 + 思考」，**不含工具调用参数**。实测（本会话日志）：真实 `outputTokens` 120.3 万，其中工具参数约 19.3 万（**17.2%**），我们按正文+思考估出 92.5 万（77%）。**不能把工具参数算进去**：客户端快照里 `tool-call` 块的 `argsRaw` 在流式中途始终是空串（宿主只在 `block-end` 才填），拿不到增量；且混进去会让数字不再是「输出文本的速度」 |
 | 「工具调用时不要显示 0」（2026-11-13 同上一问的取舍） | 725 条助手回复里 **374 条（52%）只有工具调用、没有可见文字** —— 那些步骤读数恒为 0，看着像插件停了。中途加过 `工具调用中` 状态，但**用户看过真机后改口**：「工具调用的时候还是不要显示文字，还是显示 0 tok/s 吧」—— 那一格只有「输出文本的速度」一个语义，插状态词会让它变含糊。现在已**完全撤掉** |
-| 「每步平均这里不用按照折线图显示，直接列出来第一步，输出多少，输入多少，命中多少，平均速率多少」（2026-11-13） | 第二个页签从折线改成**表格**。token 用量取宿主助手节点上的 `usage`（`inputTokens`/`outputTokens`/`cacheReadTokens`/`totalTokens`，**真实账单**）；「输入」= `totalTokens − outputTokens`，「命中」= 缓存读取占输入的百分比；「平均」用流式期间量到的「有字在流」时长作分母，**拿不到就显示 `—`**，绝不拿墙钟凑数（一步里含工具调用会让平均值失真） |`argsRaw` 为空 = 还在生成）。「工具调用中」复用数字那块定宽位置，宽度与「4ch + ` tok/s`」几乎相等，阶段切换时不伸缩；它**只换文字，不进速度计** |
+| 「每步平均这里不用按照折线图显示，直接列出来第一步，输出多少，输入多少，命中多少，平均速率多少」（2026-11-13） | 第二个页签从折线改成**表格**。token 用量取宿主助手节点上的 `usage`（**真实账单**）；「速度」优先用我们观察到的「有字在流」时长，没观察到就退回宿主节点的 `timing`（`completedTime − firstTokenTime`，真正在生成的那一段），两者都没有才显示 `—` |
+| 「这个顺序不对，应该先是缓存读取、未缓存输入、输出、缓存命中、平均速度，但是都用简写：读取 / 输入 / 输出 / 命中 / 速度」（2026-11-13） | 列顺序与简称照这条改。「输入」读 `usage.inputTokens`（**未缓存**那部分），**不是** `totalTokens − outputTokens`（那会把缓存读取算进来，六位数变成天文数字，正是用户截图里 36 万那列的来源）；「命中」= 读取 ÷（读取 + 输入 + 写入） |
+| 「我们这个弹窗框可以再宽一些」（2026-11-13） | 弹层宽 344px → **440px**；「每步」表格列宽重排成 `40/80/80/64/48/84` + 5 个 4px 间隙 = 416px，正好等于内容宽，六列不再挤 |`argsRaw` 为空 = 还在生成）。「工具调用中」复用数字那块定宽位置，宽度与「4ch + ` tok/s`」几乎相等，阶段切换时不伸缩；它**只换文字，不进速度计** |
 
 `tps-history` 的历史桶**也**改成同一口径（分母固定），否则折线图的点还会顶到天上。
 
