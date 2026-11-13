@@ -32,4 +32,9 @@ declare global {
   /** 浏览器里的 window（宿主侧 `platform: node` 的产物里不会执行到这些代码）。 */
   // eslint-disable-next-line no-var
   var window: DshWindow;
+  var document: {
+    readonly visibilityState: "visible" | "hidden";
+    addEventListener(type: "visibilitychange", listener: () => void): void;
+    removeEventListener(type: "visibilitychange", listener: () => void): void;
+  };
 }

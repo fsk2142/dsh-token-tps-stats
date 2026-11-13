@@ -32,8 +32,7 @@
  *
  * ## 为什么空闲时也不留常驻定时器
  *
- * 弹层**只在打开时**注册 500ms 的刷新定时器（时间轴要随时间右移，即使没有新帧）。
- * 关掉立刻清掉 —— 与胶囊「归零停表」同一条纪律：不在用户看不见的地方空转。
+ * 实时页打开时每 500ms 推进时间轴。每步页随数据和滚动刷新。
  *
  * @module dsh-token-tps-stats/src/client/tps-chart
  */
@@ -245,15 +244,33 @@ export function TpsChart(): unknown {
 
   useEffect(() => {
     if (!state.open) return;
-    /*
-     * 每 500ms 重画一次：时间轴在走，即使没有新帧，曲线也要随时间右移。
-     *
-     * **为什么不再订阅每一帧**：折线按**整秒**取点（最后一点落在上一个已走完的秒），
-     * 所以一个 60 秒的图每秒最多变一次 —— 流式帧每秒几十个，逐帧重画只会白烧
-     * 一次布局（面板位置要读 `getBoundingClientRect`，那会强制浏览器回流）。
-     * 500ms 的节奏足够让新的一秒在半个周期内出现，观感与逐帧重画没有区别。
-     */
-    const timer = setInterval(() => setTick((tick) => tick + 1), OPEN_TICK_MS);
+    const refresh = (): void => setTick((tick) => tick + 1);
+    if (state.tab === "time") {
+      const timer = setInterval(refresh, OPEN_TICK_MS);
+      return () => clearInterval(timer);
+    }
+
+    // Coalesce stream updates and keep the floating panel attached when the view scrolls.
+    let pending: ReturnType<typeof setTimeout> | undefined;
+    const schedule = (): void => {
+      if (pending !== undefined) return;
+      pending = setTimeout(() => {
+        pending = undefined;
+        refresh();
+      }, OPEN_TICK_MS);
+    };
+    const stop = state.stream?.steps.subscribe(schedule);
+    window.addEventListener("scroll", schedule, true);
+    refresh();
+    return () => {
+      stop?.();
+      window.removeEventListener("scroll", schedule, true);
+      if (pending !== undefined) clearTimeout(pending);
+    };
+  }, [state.open, state.tab, state.stream]);
+
+  useEffect(() => {
+    if (!state.open) return;
     const onKey = (event: DshEvent): void => {
       if (event.key !== "Escape") return;
       event.stopPropagation?.();
@@ -277,7 +294,6 @@ export function TpsChart(): unknown {
     window.addEventListener("pointerdown", onPointerDown, true);
     window.addEventListener("resize", onResize);
     return () => {
-      clearInterval(timer);
       window.removeEventListener("keydown", onKey, true);
       window.removeEventListener("pointerdown", onPointerDown, true);
       window.removeEventListener("resize", onResize);
@@ -328,8 +344,7 @@ function renderPanel(
    * 「怎么是全局速度」），不如老实显示空态。
    */
   const stream = state.stream;
-  const timeView = timeSeriesOf(stream, now, state.seconds);
-  const rows = stream === undefined ? [] : stream.steps.rows(state.steps);
+  const timeView = state.tab === "time" ? timeSeriesOf(stream, now, state.seconds) : undefined;
   const placement = panelPlacement(anchor);
   const seconds = state.seconds;
   const steps = state.steps;
@@ -393,7 +408,7 @@ function renderPanel(
     },
     renderHeader(state.tab, help),
     help.helpOpen ? renderHelp() : null,
-    state.tab === "time"
+    timeView !== undefined
       ? renderColumn({
           title: `实时速度 · 最近 ${rangeLabel(seconds)}`,
           /*
@@ -411,7 +426,7 @@ function renderPanel(
           axisEnd: "现在",
           buttons: renderRangeButtons(seconds),
         })
-      : renderStepTable(rows, steps),
+      : renderStepTable(stream?.steps.rows(steps) ?? [], steps),
   );
 }
 
@@ -430,27 +445,14 @@ interface TimeView {
  * @returns 几何 + 量程 + 统计值。
  */
 function timeSeriesOf(stream: SessionStream | undefined, now: number, seconds: TpsChartRange): TimeView {
-  const points = stream === undefined ? [] : stream.history.series(now, seconds);
-  /*
-   * **统计值直接在这批点上算**（2026-11-13 优化）。
-   *
-   * 原来 `history.series()` 和 `history.summary()` 各算一遍滑动窗：弹层每 500ms
-   * 重画一次，300 秒那一档等于每半秒白算 300 个点。而 `series()` 已经把每个点的
-   * 值给出来了 —— 平均/峰值/最新就是它们的 sum / max / 最后一项。
-   */
-  const summary: TpsSeriesSummary =
-    points.length === 0
-      ? { average: 0, peak: 0, latest: 0 }
-      : {
-          average: points.reduce((total, point) => total + point.value, 0) / points.length,
-          peak: points.reduce((peak, point) => (point.value > peak ? point.value : peak), 0),
-          latest: points[points.length - 1]!.value,
-        };
+  const { points, summary } = stream?.history.view(now, seconds) ??
+    { points: [], summary: { average: 0, peak: 0, latest: 0 } };
   const scale = axisScale(summary.peak);
-  const geometry = buildGeometry(
-    points.map((point) => point.value),
-    { width: PLOT_WIDTH, height: PLOT_HEIGHT, max: scale.max },
-  );
+  const span = seconds * 1_000;
+  const geometry = buildGeometry(points.map((point) => point.value), {
+    width: PLOT_WIDTH, height: PLOT_HEIGHT, max: scale.max,
+    positions: points.map((point) => (point.at - now + span) / span),
+  });
   return { geometry, scale, summary };
 }
 

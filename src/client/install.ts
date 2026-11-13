@@ -48,10 +48,12 @@
 
 import { TpsChart } from "./tps-chart";
 import { TpsPill } from "./tps-pill";
+import { sessionEventSourceOf } from "./session-events";
 
 /** 探针需要的客户端上下文面（只用 `inject`，不碰别的服务）。 */
 export interface TpsPluginContext {
   inject?(names: readonly string[], callback: (scoped: TpsPluginContext) => unknown): unknown;
+  get?(name: string): unknown;
 }
 
 /** 宿主 `ctx.slots` 的最小面（只认 `inject` 与 `register`）。 */
@@ -210,7 +212,14 @@ export function installTpsPill(ctx: TpsPluginContext): void {
           {
             name: "conversation.composer.dock",
             // 负 order → 排在官方两个胶囊（轮次/步数 = 0、用量 = 1）的**左边**。
-            spec: { name: "conversation.composer.dock", id: "token-tps-stats", order: -1 },
+            spec: {
+              name: "conversation.composer.dock",
+              id: "token-tps-stats",
+              order: -1,
+              inject: () => ({
+                tpsEventSourceFor: (sessionId: string) => sessionEventSourceOf(scoped.get?.("sessions"), sessionId),
+              }),
+            },
             component: TpsPill,
             remember: (dispose) => {
               pillDispose = dispose;

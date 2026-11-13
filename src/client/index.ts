@@ -3,7 +3,7 @@
  *
  * ## 这个插件只做一件事
  *
- * 订阅 `assistant/live-chunk`，按 1 秒 × 9 窗口算出「当前会话的输出速度」，
+ * 从当前会话的流式输出估算速度，
  * 显示在 `conversation.composer.dock` 里、排在那两个官方胶囊（轮次/步数、用量）的左边。
  *
  * ## 安全边界（每一条都是实测踩出来的）
@@ -18,7 +18,7 @@
  * @module dsh-token-tps-stats/src/client/index
  */
 
-import { installTpsPill } from "./install";
+import { installTpsPill, type TpsPluginContext } from "./install";
 
 /**
  * 本插件**不列**任何 cordis 服务。
@@ -29,16 +29,11 @@ import { installTpsPill } from "./install";
  */
 export const inject: readonly string[] = [];
 
-/** 客户端上下文的窄面（只用 `inject`）。 */
-interface ClientContext {
-  inject?(names: readonly string[], callback: (scoped: ClientContext) => unknown): unknown;
-}
-
 /**
  * 客户端插件入口。
  * @param ctx - 宿主注入的客户端上下文。
  */
-export function apply(ctx: ClientContext): void {
+export function apply(ctx: TpsPluginContext): void {
   try {
     installTpsPill(ctx);
   } catch (error: unknown) {

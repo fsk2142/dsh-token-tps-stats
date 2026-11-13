@@ -1,83 +1,15 @@
-/**
- * **实时 tok/s 的胶囊**（2026-11-12，第 2 步；第 3 步加「可点击」；
- * 2026-11-13 改成「每个会话一份」）。
- *
- * ## 放在哪
- *
- * 注册进 `conversation.composer.dock`，`order: -1` —— 官方那两个胶囊
- * （轮次/步数 = order 0、用量 = 1）排在右边，所以它出现在输入框底部那一行
- * 「92 轮 4018 步 · …」的**左边**。
- *
- * ## 数据从哪来（2026-11-13 用户反馈「怎么是全局的会话速度」）
- *
- * 这个槽位是 `scope: "session"`：宿主给使用者发的是**这个会话**的 `useChat`
- * 选择器和 `sessionId`。官方那两个胶囊就是这么读的，我们也只读这一步：
- *
- * ```
- * const partial = useChat((snapshot) => snapshot.legacy.partial);   // 正在生成的那一步
- * useEffect(() => pushSnapshot(entry, partial, Date.now()), [partial]);
- * ```
- *
- * 不再注册 `uiConversation.events` 的 Definition —— 那张注册表是**全局**的，
- * 每个会话都会把它拿去匹配自己那份事件流，累加器只能是一锅粥（详见
- * `session-store.ts` 与 `progress.ts` 的说明）。
- *
- * ## 样式为什么写成一串 CSS 变量的 calc（2026-11-12 用户实测反馈）
- *
- * 用户第一版看到的效果：**「字体和官方的不一致」**。根因是我只写了
- * `display/color/tabular-nums` 三个内联属性，**没有覆盖字号与行高** —— 于是它继承
- * 容器默认值，和旁边官方胶囊差一档。
- *
- * 官方胶囊的真实规则（`@deepseek-ai/dsh-client-ui-chat` 的 `StatsPills` 模块）：
- *
- * ```
- * .anchor { min-width:0; font-size:calc(var(--dsh-content-font-size-secondary,13px) - 1px);
- *           line-height:calc(20px + var(--dsh-content-font-delta-secondary,0px)); display:inline-flex }
- * .pill   { border-radius:var(--dsw-radius-sm); color:var(--dsw-alias-label-tertiary);
- *           font:inherit; font-variant-numeric:tabular-nums; white-space:nowrap;
- *           background:0 0; border:none; align-items:center; gap:6px; padding:1px 8px; display:inline-flex }
- * .pill svg { flex:none; width:14px; height:14px }
- * ```
- *
- * 这里逐条照抄成内联样式（不引它的 CSS Module —— 那是宿主私有类名，换版本会变）。
- *
- * ## 为什么空闲时显示 0 而不是消失（用户明确要求）
- *
- * 用户原话：「完全没有会话动作的时候直接显示 0 tok/s 吧，不要消失」。
- *
- * ## 为什么定时器要能停也能重启
- *
- * 「指针回落」需要即使没有新事件也重算（每 100ms 一次）。但值已经是 0 之后就没必要
- * 再算了 —— 所以归零时**停表**，等下一拍数据（`pushSnapshot`）再重启。
- * 这样空闲时不会留一个每秒唤醒 10 次的主线程定时器。
- *
- * ## 第 3 步：点击打开折线图
- *
- * 用户要求：「这个胶囊可以点击，点击的时候显示一段折线图，反映一段时间内 tps 的变化」。
- *
- * 实现上分三块，各自独立可测：
- * - 本文件：胶囊本体（按钮语义 + 点击时把自己的屏幕矩形与**本会话的流**交给状态仓库）；
- * - `chart-store.ts`：模块级开关（胶囊和弹层不共享 React 树，只能这样交换数据）；
- * - `tps-chart.ts`：画在 `shell.overlay` 上的弹层（折线图 + 时长切换）。
- *
- * 弹层所在的 `shell.overlay` 是 `scope: root`，拿不到 `useChat`/`sessionId` ——
- * 所以「看哪个会话的曲线」必须由胶囊在打开时一起交过去，弹层自己推不出来。
- *
- * @module dsh-token-tps-stats/src/client/tps-pill
- */
+/** 实时速度胶囊及当前会话的订阅生命周期。 */
 
-import { createElement, useEffect, useState, type ReactElement } from "react";
+import { createElement, useEffect, useRef, useState, type ReactElement } from "react";
 
-import { getChartState, setPillElement, subscribeChart, toggleChart, type ChartAnchor } from "./chart-store";
+import { closeChart, getChartState, setPillElement, subscribeChart, toggleChart, type ChartAnchor } from "./chart-store";
 import { formatRate } from "./format";
 import { pillAriaOf, pillLabelOf } from "./label";
-import { claimSessionStream, pushNodes, pushSnapshot, readingOf, releaseSessionStream, type SessionStream } from "./session-store";
+import type { SessionEventSourceFor } from "./session-events";
+import { createSessionStream, observeSessionSpeed, pushNodes, pushSnapshot, resetSnapshotBaseline } from "./session-store";
 import { TYPO } from "./styles";
 
 export { formatRate };
-
-/** 重渲染间隔（毫秒）：100ms 足够顺滑，又不至于像 60fps 那样白烧。 */
-const TICK_MS = 100;
 
 /** 胶囊的标记属性（弹层用它判断「点的是不是胶囊」）。 */
 const PILL_ATTRIBUTE = "data-token-tps-pill";
@@ -110,9 +42,10 @@ export interface TpsPillProps {
   readonly useChat?: unknown;
   /** 当前会话 id。 */
   readonly sessionId?: unknown;
+  readonly tpsEventSourceFor?: SessionEventSourceFor;
 }
 
-/** 与官方 `.pill` 逐条对齐的内联样式（理由见文件头）。 */
+/** 与官方 `.pill` 对齐的内联样式。 */
 const PILL_STYLE = {
   boxSizing: "border-box",
   borderRadius: "var(--dsw-radius-sm)",
@@ -190,103 +123,60 @@ function GaugeIcon(): ReactElement {
  * @returns 元素。
  */
 export function TpsPill(props: TpsPillProps = {}): unknown {
+  // Give each session its own effects, baseline and history, even if DSH reuses the slot.
   const sessionKey = typeof props.sessionId === "string" ? props.sessionId : undefined;
-  /*
-   * 认领一份**属于这个会话**的状态。
-   *
-   * `useState` 的惰性初始化只在首次渲染跑一次：会话 id 变了 React 会给这个组件换 key
-   * （槽位按 session 重建），所以这里不必处理「中途换 id」的情况；万一宿主没换 key，
-   * 下面的 effect 会把状态重新认领一次（见依赖表）。
-   */
-  const [entry, setEntry] = useState<SessionStream>(() => claimSessionStream(sessionKey));
+  return createElement(SessionPill, { ...props, key: sessionKey, sessionKey });
+}
 
-  /*
-   * 读当前会话「正在生成的这一步」。
-   *
-   * `legacy.partial` 的形状是 `{ turn, step, blocks }`，`blocks` 里的文本是**累计**的
-   * （宿主每来一帧就拼一次）。这里订阅的正是官方胶囊用的那份快照 —— 它只含**这个会话**
-   * 的内容，所以不会再混进别的会话。
-   *
-   * 钩子必须无条件调用（React 的规则），所以先在本行取值，再在 effect 里推。
-   */
-  const useChat = props.useChat as ((selector: (snapshot: unknown) => unknown) => unknown) | undefined;
-  const partial = typeof useChat === "function" ? useChat((snapshot) => (snapshot as { legacy?: { partial?: unknown } })?.legacy?.partial) : undefined;
-  /*
-   * 已完成的助手节点：**每步的真实 token 用量在它们身上**（`nodes[i].usage`）。
-   *
-   * `legacy.partial` 只有正在生成的那一步、只有累计文本、没有 `usage`；
-   * 「每步」这一页要显示的输出/输入/命中只能来自这里。官方「本轮用量」弹窗读的
-   * 也是同一个字段。
-   */
-  const nodes = typeof useChat === "function" ? useChat((snapshot) => (snapshot as { legacy?: { nodes?: unknown } })?.legacy?.nodes) : undefined;
-
-  /*
-   * 诊断：拿不到 `useChat` 就只会恒显示 0，必须在控制台留一句 ——
-   * 否则「数字一直是 0」会被当成计算问题，实际是槽位属性没送到。
-   */
-  useEffect(() => {
-    if (typeof useChat === "function") return;
-    console.debug(
-      "[dsh-token-tps-stats] tps pill: slot props have no useChat; the reading will stay 0 (session scope missing?)",
-    );
-  }, [useChat]);
-
-  const [value, setValue] = useState<number>(() => readingOf(entry, Date.now()));
-  const [expanded, setExpanded] = useState<boolean>(() => getChartState().open);
-  /** 这次渲染要显示的三段文本（固定前缀 + 定宽数字 + 单位，见 `label.ts`）。 */
+function SessionPill(props: TpsPillProps & { sessionKey?: string }): unknown {
+  const { sessionKey } = props;
+  const [entry] = useState(() => createSessionStream(sessionKey));
+  const [value, setValue] = useState(0);
+  const [expanded, setExpanded] = useState(() => getChartState().open);
   const label = pillLabelOf(value, formatRate);
-
+  type ChatSnapshot = { legacy?: { partial?: unknown; nodes?: unknown } };
+  const useChat = typeof props.useChat === "function"
+    ? props.useChat as (selector: (snapshot: ChatSnapshot) => unknown) => unknown
+    : undefined;
+  const partial = useChat?.((snapshot) => snapshot?.legacy?.partial);
+  const nodes = useChat?.((snapshot) => snapshot?.legacy?.nodes);
   /*
-   * 会话换了（理论上宿主会给新 key，但这里仍兜一层）：换到新的那份状态，并把旧的还回去。
+   * **把事件源解析函数钉在 ref 里**（2026-11-13）。
+   *
+   * `tpsEventSourceFor` 来自 `slots.register` 的 `inject:` 工厂 —— 那是宿主用来
+   * 算 props 的，**每次渲染都可能返回新对象**。如果把它直接放进 useEffect 的
+   * 依赖表，那个建立订阅的 effect 会随每次渲染拆掉重建：订阅被反复取消/重建，
+   * 定时器也跟着停停启启。
+   *
+   * 用 ref 存一份「最新」，effect 只依赖会话 id —— 订阅只建立一次。
    */
+  const sourceFor = useRef(props.tpsEventSourceFor);
+  sourceFor.current = props.tpsEventSourceFor;
+
   useEffect(() => {
-    if (entry.sessionKey === sessionKey) return;
-    const next = claimSessionStream(sessionKey);
-    releaseSessionStream(entry);
-    setEntry(next);
+    let source;
+    try {
+      source = sessionKey === undefined ? undefined : sourceFor.current?.(sessionKey);
+    } catch (error: unknown) {
+      console.debug("[dsh-token-tps-stats] session feed unavailable", error);
+    }
+    const stop = observeSessionSpeed(entry, source, setValue);
+    const onVisibility = (): void => resetSnapshotBaseline(entry);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      stop();
+      if (getChartState().stream === entry) closeChart();
+    };
+    // 依赖里**不放** `tpsEventSourceFor`：它每次渲染都可能是新函数（理由见上）。
   }, [entry, sessionKey]);
 
-  /*
-   * 每一拍快照 → 差分 + 摊开 → 速度计与历史。
-   *
-   * 放在 effect 里而不是渲染中：渲染必须无副作用（StrictMode 下渲染会跑两次）。
-   * 差分本身是幂等的 —— 同一份 `partial` 重复推一次，`newTextSince` 看到「文本没变长」
-   * 就什么都不产出。
-   *
-   * **`partial` 为空时也要推**（不要在这里 `return`）：这一步结束时 `pushSnapshot`
-   * 要把基线清掉（`sampledAt` 也推进），否则下一次同样的 turn/step 重试会被旧基线
-   * 把整段累计文本算成「新到的字」。
-   */
   useEffect(() => {
+    if (document.visibilityState === "hidden" && !entry.liveEvents) return;
     pushSnapshot(entry, partial, Date.now());
-    setValue(readingOf(entry, Date.now()));
   }, [entry, partial]);
 
-  /*
-   * 每拍把**已完成的助手节点**过一遍，收下它们的真实用量。
-   *
-   * 只推进步统计、不碰速度计 —— 那一步早就结束了，把它的旧 token 记进实时读数
-   * 会凭空冒出一个峰。`pushNodes` 是幂等的（同一步只更新不新增行）。
-   */
-  useEffect(() => {
-    pushNodes(entry, nodes);
-  }, [entry, nodes]);
-
-  /*
-   * 指针回落需要**没有新数据时也继续重算**（每 100ms 一次）；归零就停表。
-   *
-   * 依赖用 `[entry, active]` 而不是 `[entry, value]`：读出 47→48→49 这种变化时
-   * 定时器不该被拆了重建（那会每 100ms 造一个定时器）。只在「有速度 ↔ 没速度」
-   * 这条边界上启停。
-   */
-  const active = value > 0;
-  useEffect(() => {
-    if (!active) return;
-    const timer = setInterval(() => {
-      setValue(readingOf(entry, Date.now()));
-    }, TICK_MS);
-    return () => clearInterval(timer);
-  }, [entry, active]);
+  useEffect(() => pushNodes(entry, nodes), [entry, nodes]);
 
   /** 订阅弹层的开关（只为了给按钮刷 `aria-expanded`）。 */
   useEffect(() => subscribeChart(() => setExpanded(getChartState().open)), []);

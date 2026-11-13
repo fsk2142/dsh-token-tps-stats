@@ -1,235 +1,188 @@
-/**
- * **每一步的账**（2026-11-13）。
- *
- * ## 用户要的是什么
- *
- * > 每步平均这里不用按照折线图显示，直接列出来第一步，输出多少，输入多少，
- * > 命中多少，平均速率多少，这样子
- *
- * 随后又明确了**列的顺序与简称**：
- *
- * > 应该先是缓存读取、未缓存输入、输出、缓存命中、平均速度，
- * > 但是都用简写：读取 / 输入 / 输出 / 命中 / 速度。
- *
- * 所以一行是：步号 · 读取 · 输入 · 输出 · 命中 · 速度。
- *
- * ## 两种数据、两个来源
- *
- * 1. **token 用量**：宿主的助手节点上带 `usage`
- *    （`inputTokens` / `outputTokens` / `cacheReadTokens` / `cacheWriteTokens` /
- *    `reasoningTokens` / `totalTokens`）。这是**真实数字**，不是估算 ——
- *    列表里显示的就是账单上的数。
- * 2. **速度**：用量里没有时长。两个来源，按可靠程度排：
- *    - 我们自己观察到的「有字在流」时长（`activeMs`，页面在流式期间就挂上时有）；
- *    - 宿主节点上的 `timing`（`completedTime − firstTokenTime` = 这一步真正在生成
- *      的那段时间，含工具参数生成，不含等工具返回）。
- *    两个都没有就显示 `—`，**不拿墙钟凑数** —— 一步里含工具调用，把等待算进
- *    分母会让平均值低得没有意义。
- *
- * ## 为什么单次间隔封顶、时长有下限
- *
- * 主线程被占住几秒后一次交付一大段，不封顶会让那一段被算成很长的流式时间；
- * 而全部字恰好落在同一帧里时长又会接近 0，除出天文数字。封顶 2 秒 + 下限 500
- * 毫秒的结果是**分母只可能偏大、读数只可能偏低** —— 宁可少报，不出假峰值
- * （用户为「偶尔冲到 300 多」专门提过一次）。
- *
- * @module dsh-token-tps-stats/src/client/step-history
- */
-
-/** 弹窗里「每步」视图可选的步数档。 */
+/** Per-step usage and average output rate, newest step first. */
 export const TPS_STEP_RANGES = [5, 10, 20] as const;
-
-/** 可选步数档的类型。 */
 export type TpsStepRange = (typeof TPS_STEP_RANGES)[number];
-
-/** 默认显示几步。 */
 export const TPS_STEP_DEFAULT = 5;
 
-/** 最多留多少步（20 步档留一倍余量，便于切档时不丢最近的）。 */
 const MAX_STEPS = 40;
 
-/** 单次交付的间隔最多计多久（毫秒）：见文件头。 */
-const STEP_GAP_CAP_MS = 2_000;
-
-/** 一步的时长下限（毫秒）：见文件头。 */
-const MIN_DURATION_MS = 500;
-
-/** 一步的真实用量（字段名与宿主 `usage` 完全一致，不另外造词）。 */
 export interface StepUsage {
-  /**
-   * **未缓存输入** token（宿主 `inputTokens`）。
-   *
-   * 注意它**不含**缓存读取：宿主把「命中缓存的部分」单独放在 `cacheReadTokens`。
-   * 所以「输入」这一列读它，而不是 `totalTokens − outputTokens`（后者含缓存）。
-   */
   readonly inputTokens?: number;
-  /** 输出 token。 */
   readonly outputTokens?: number;
-  /** 缓存读取（命中）的 token。 */
   readonly cacheReadTokens?: number;
-  /** 缓存写入的 token。 */
   readonly cacheWriteTokens?: number;
-  /** 推理 token。 */
   readonly reasoningTokens?: number;
-  /** 总 token。 */
   readonly totalTokens?: number;
-  /**
-   * 这一步真正在生成的时长（毫秒），由宿主节点的 `timing` 折算：
-   * `completedTime − firstTokenTime`。
-   *
-   * 不含「等工具返回」那段 —— 所以比墙钟可信。
-   */
-  readonly generationMs?: number;
+  /** Host time from step start to assistant message completion, before tool execution. */
+  readonly modelMs?: number;
 }
 
-/** 列表里的一行（按**最新在前**排）。 */
 export interface StepRow {
-  /** 轮次。 */
   readonly turn: number;
-  /** 步数（这一轮里的第几步）。 */
   readonly step: number;
-  /** **读取**：缓存读取的 token；没有用量时 `undefined`。 */
   readonly cacheReadTokens: number | undefined;
-  /** **输入**：未缓存的输入 token；没有用量时 `undefined`。 */
   readonly inputTokens: number | undefined;
-  /** **输出**：输出 token（有真实用量就用它，否则用流式期间的估算）。 */
-  readonly outputTokens: number;
-  /** **命中**：缓存读取占整个提示（读取 + 输入 + 写入）的比例；算不出时 `undefined`。 */
+  readonly outputTokens: number | undefined;
   readonly hitRatio: number | undefined;
-  /** **速度**：平均速率（tok/s）；量不到时长时 `undefined`。 */
   readonly speed: number | undefined;
-  /** 是否拿到了真实用量（`false` = 这一行是流式期间估出来的）。 */
   readonly measured: boolean;
-  /** 是不是还在进行中的那一步。 */
   readonly running: boolean;
 }
 
-/** 步统计的对外面。 */
 export interface StepHistory {
-  /**
-   * 记一次流式交付（由 `session-store.ts` 每拍调用）。
-   * @param stream - 流标识（`turn:step`）。
-   * @param turn - 轮次。
-   * @param step - 步数。
-   * @param tokens - 这次交付的估算 token 数。
-   * @param gapMs - 距上一次采样的间隔（毫秒）；内部按上限截断。
-   */
-  add(stream: string, turn: number, step: number, tokens: number, gapMs: number): void;
-  /**
-   * 记一步的**真实用量**（宿主节点上带 `usage` 时调用）。
-   *
-   * 幂等：同一 `turn:step` 重复调用只会更新，不会多出一行（宿主每帧都给新数组，
-   * 同一步的用量不会变）。
-   * @param turn - 轮次。
-   * @param step - 步数。
-   * @param usage - 真实用量。
-   */
+  setRunning(turn: number, step: number, tokens: number): void;
+  clearRunning(): void;
+  setCompleted(nodes: readonly unknown[]): void;
   settle(turn: number, step: number, usage: StepUsage): void;
-  /** 最近 `count` 步（**最新在前**）。 */
+  subscribe(listener: () => void): () => void;
   rows(count: number): StepRow[];
 }
 
-/** 一步的累积状态。 */
-interface Draft {
-  readonly stream: string;
-  readonly turn: number;
-  readonly step: number;
-  /** 流式期间估出来的 token（真实用量到达前的兜底）。 */
-  estimatedTokens: number;
-  /** 观察到「有字在流」的总时长（毫秒，已截断）。 */
-  activeMs: number;
-  /** 拿到真实用量后填上。 */
-  usage: StepUsage | undefined;
-  /** 是否已经结束（拿到过真实用量）。 */
-  settled: boolean;
+type StepId = Pick<StepRow, "turn" | "step">;
+
+function newestFirst(a: StepId, b: StepId): number {
+  return b.turn - a.turn || b.step - a.step;
 }
 
-/**
- * 造一个步统计器。
- * @returns 步统计器。
- */
+function cacheHitRatio(usage: StepUsage): number | undefined {
+  const { cacheReadTokens, inputTokens, cacheWriteTokens, totalTokens, outputTokens } = usage;
+  if (cacheReadTokens === undefined) return undefined;
+  const known = cacheReadTokens + (inputTokens ?? 0) + (cacheWriteTokens ?? 0);
+  // DSH's total includes all input buckets and the reported output.
+  const promptTokens = totalTokens !== undefined && outputTokens !== undefined
+    ? totalTokens - outputTokens
+    : inputTokens === undefined ? undefined : known;
+  if (promptTokens === undefined || promptTokens <= 0 || promptTokens < known) return undefined;
+  if (inputTokens !== undefined && cacheWriteTokens !== undefined && promptTokens !== known) return undefined;
+  return cacheReadTokens / promptTokens;
+}
+
+function countOf(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+function usageOf(raw: unknown, timing: unknown): StepUsage | undefined {
+  const times = timing as { stepStartTime?: unknown; completedTime?: unknown } | null | undefined;
+  const start = countOf(times?.stepStartTime);
+  const done = countOf(times?.completedTime);
+  const modelMs = start !== undefined && done !== undefined && done > start ? done - start : undefined;
+  const usage = typeof raw === "object" && raw !== null ? raw as Record<string, unknown> : undefined;
+  if (usage === undefined && modelMs === undefined) return undefined;
+  return {
+    inputTokens: countOf(usage?.inputTokens),
+    outputTokens: countOf(usage?.outputTokens),
+    cacheReadTokens: countOf(usage?.cacheReadTokens),
+    cacheWriteTokens: countOf(usage?.cacheWriteTokens),
+    totalTokens: countOf(usage?.totalTokens),
+    modelMs,
+  };
+}
+
 export function createStepHistory(): StepHistory {
-  /** 按 `turn:step` 收着；Map 的插入顺序就是先后顺序。 */
-  const drafts = new Map<string, Draft>();
+  const completed: StepRow[] = [];
+  const listeners = new Set<() => void>();
+  let source: readonly unknown[] | undefined;
+  let materialized = true;
+  let running: { turn: number; step: number; tokens: number } | undefined;
 
-  /** 当前正在流的那一步（槽位组件每拍告诉它「现在是谁」）。 */
-  let current: string | undefined;
+  const notify = (): void => {
+    for (const listener of listeners) listener();
+  };
 
-  /** 取/建这一步的草稿。 */
-  const draftOf = (stream: string, turn: number, step: number): Draft => {
-    let draft = drafts.get(stream);
-    if (draft === undefined) {
-      draft = { stream, turn, step, estimatedTokens: 0, activeMs: 0, usage: undefined, settled: false };
-      drafts.set(stream, draft);
-      // 超出上限就丢最旧的（Map 保持插入顺序，第一个就是最旧的）。
-      while (drafts.size > MAX_STEPS) {
-        const oldest = drafts.keys().next();
-        if (oldest.done === true) break;
-        drafts.delete(oldest.value);
+  const insert = (id: StepId, usage: StepUsage, position: number): void => {
+    const { cacheReadTokens, inputTokens, outputTokens, modelMs } = usage;
+    const row: StepRow = {
+      ...id, cacheReadTokens, inputTokens, outputTokens,
+      hitRatio: cacheHitRatio(usage),
+      speed: outputTokens !== undefined && modelMs !== undefined && Number.isFinite(modelMs) && modelMs > 0
+        ? outputTokens / (modelMs / 1_000)
+        : undefined,
+      measured: outputTokens !== undefined,
+      running: false,
+    };
+
+    if (position === -1) completed.push(row);
+    else completed.splice(position, newestFirst(completed[position]!, row) === 0 ? 1 : 0, row);
+    if (completed.length > MAX_STEPS) completed.pop();
+  };
+
+  const refreshCompleted = (): void => {
+    if (materialized || source === undefined) return;
+    materialized = true;
+    completed.length = 0;
+    // DSH supplies ascending event order. Keep the logical step order even for revised or reordered snapshots.
+    for (let i = source.length - 1; i >= 0; i -= 1) {
+      const node = source[i] as {
+        kind?: unknown; turn?: unknown; step?: unknown; usage?: unknown; timing?: unknown;
+      } | null;
+      if (node?.kind !== "assistant") continue;
+      const turn = countOf(node.turn);
+      const step = countOf(node.step);
+      if (turn === undefined || step === undefined) continue;
+      const oldest = completed[MAX_STEPS - 1];
+      if (oldest !== undefined && (turn < oldest.turn || (turn === oldest.turn && step <= oldest.step))) continue;
+      const id = { turn, step };
+      const position = completed.findIndex((row) => newestFirst(row, id) >= 0);
+      // Scan newest first, so a duplicate with valid usage has already been added.
+      if (position !== -1 && newestFirst(completed[position]!, id) === 0) continue;
+      const usage = usageOf(node.usage, node.timing);
+      if (usage !== undefined) {
+        if (running?.turn === turn && running.step === step) running = undefined;
+        insert(id, usage, position);
       }
     }
-    return draft;
   };
 
   return {
-    add: (stream, turn, step, tokens, gapMs) => {
-      if (!Number.isFinite(tokens) || tokens <= 0) return;
-      current = stream;
-      const draft = draftOf(stream, turn, step);
-      draft.estimatedTokens += tokens;
-      draft.activeMs += Math.min(Math.max(0, Number.isFinite(gapMs) ? gapMs : 0), STEP_GAP_CAP_MS);
+    setRunning(turn, step, tokens) {
+      if (!Number.isFinite(tokens) || tokens <= 0) {
+        if (running === undefined) return;
+        running = undefined;
+      } else {
+        if (running?.turn === turn && running.step === step && Math.round(running.tokens) === Math.round(tokens)) return;
+        running = { turn, step, tokens };
+      }
+      notify();
     },
-    settle: (turn, step, usage) => {
-      const stream = `${String(turn)}:${String(step)}`;
-      const draft = draftOf(stream, turn, step);
-      draft.usage = usage;
-      draft.settled = true;
+    clearRunning() {
+      if (running === undefined) return;
+      running = undefined;
+      notify();
     },
-    rows: (count) => {
-      const requested = Math.max(1, Math.floor(count));
-      const list = [...drafts.values()].slice(-requested).reverse();
-      return list.map((draft) => {
-        const usage = draft.usage;
-        const outputTokens = usage?.outputTokens ?? draft.estimatedTokens;
-        /*
-         * 提示总量 = 读取 + 未缓存输入 + 写入。用它算命中率，而不是
-         * `totalTokens − outputTokens` —— 后者在 `totalTokens` 缺省或有其它
-         * 组成项时会对不上，前者的定义是我们自己拼得出来的。
-         */
-        const prompt =
-          (usage?.cacheReadTokens ?? 0) + (usage?.inputTokens ?? 0) + (usage?.cacheWriteTokens ?? 0);
-        const hitRatio = usage?.cacheReadTokens === undefined || prompt <= 0 ? undefined : usage.cacheReadTokens / prompt;
-        /*
-         * 时长优先用**我们自己观察到的**流式时间；没观察到（页面在步骤结束后才挂上）
-         * 就退回宿主的 `timing`：`completedTime − firstTokenTime`，那才是「在生成」的
-         * 那一段，不含等工具返回。
-         *
-         * 「观察到」的判据是 `estimatedTokens > 0`（见过 delta），不是
-         * `activeMs >= 下限`：全部字恰好落在同一毫秒里时 `activeMs` 就是 0，
-         * 那仍然是**观察到了**，该按下限兜底而不是判成「未知」。
-         */
-        const observed = draft.estimatedTokens > 0 ? Math.max(draft.activeMs, MIN_DURATION_MS) : undefined;
-        const generation = usage?.generationMs;
-        const durationMs = observed ?? (generation !== undefined && generation > 0 ? generation : undefined);
-        return {
-          turn: draft.turn,
-          step: draft.step,
-          cacheReadTokens: usage?.cacheReadTokens,
-          inputTokens: usage?.inputTokens,
-          outputTokens,
-          hitRatio,
-          speed: durationMs === undefined ? undefined : (outputTokens / durationMs) * 1_000,
-          measured: usage !== undefined,
-          running: draft.stream === current && !draft.settled,
-        };
-      });
+    setCompleted(nodes) {
+      if (source === nodes) return;
+      source = nodes;
+      materialized = false;
+      notify();
+    },
+    settle(turn, step, usage) {
+      refreshCompleted();
+      if (running?.turn === turn && running.step === step) running = undefined;
+      const id = { turn, step };
+      const position = completed.findIndex((row) => newestFirst(row, id) >= 0);
+      if (position === -1 && completed.length === MAX_STEPS) return;
+      insert(id, usage, position);
+      notify();
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
+    rows(count) {
+      refreshCompleted();
+      const limit = Math.min(MAX_STEPS, Math.max(1, Math.floor(count)));
+      const rows = completed.slice(0, limit);
+      const draft = running;
+      if (draft !== undefined && !completed.some((row) => newestFirst(row, draft) === 0)) {
+        rows.push({
+          turn: draft.turn, step: draft.step, outputTokens: draft.tokens,
+          cacheReadTokens: undefined, inputTokens: undefined, hitRatio: undefined, speed: undefined,
+          measured: false, running: true,
+        });
+        rows.sort(newestFirst);
+      }
+      return rows.slice(0, limit);
     },
   };
 }
 
-/** **仅供测试**：导出内部常量，方便断言边界。 */
-export const STEP_HISTORY_CONSTANTS = {
-  maxSteps: MAX_STEPS,
-  gapCapMs: STEP_GAP_CAP_MS,
-  minDurationMs: MIN_DURATION_MS,
-} as const;
+export const STEP_HISTORY_CONSTANTS = { maxSteps: MAX_STEPS } as const;

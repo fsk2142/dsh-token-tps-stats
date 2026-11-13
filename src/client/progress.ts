@@ -1,42 +1,4 @@
-/**
- * **流式文本的差分**（2026-11-13，为「每个会话各自统计」改数据源）。
- *
- * ## 为什么不再吃 `assistant/live-chunk` 事件
- *
- * 用户原话：「另外应该统计的是每个会话自己的速度，我看怎么是全局的会话速度？」、
- * 「官方的那个轮次胶囊就是显示当前会话任务的信息，这个实时输出速度希望也是显式
- * 当前会话的输出信息，因为每个会话使用的模型可能不一样，所以不能全局统计」。
- *
- * 我先前的实现注册了一个 `uiConversation.events` 的 Definition（kind
- * `dsh-token-tps-stats-meter`），把每一帧流式文本累加进一个**模块级**速度计。
- * 问题在宿主的装配方式：Definition 注册表是**全局**的（键是 kind，重复注册直接抛错），
- * 而每个会话各自有一个装配器，把所有已注册 Definition 拿去匹配**自己那份**事件流。
- * 于是同一个 Definition 会被每一个会话分别调用 —— 我把它们全都加进了同一个累加器，
- * 读数自然是「所有会话合起来的速度」。子代理（subagent）同时跑的时候尤其离谱：
- * 它和父会话的字被算成一份。
- *
- * `assistant/live-chunk` 的载荷里只有 `attemptId / turn / step / chunk`，**没有会话 id**，
- * 从事件回调里根本分不出是哪个会话。所以正确的数据源不是事件，而是**槽位属性里的
- * 会话快照**：dock 是 `scope: "session"` 的槽位，它的使用者拿到的 `useChat` 选择器
- * 只会返回**当前这个会话**的聊天快照（官方那两个胶囊（轮次/步数、用量）正是这么读的）。
- *
- * ## 快照里只有「累计文本」，所以这里做差分
- *
- * `legacy.partial` 是「正在生成的这一步」，形状 `{ turn, step, blocks }`，其中
- * `blocks[i].text` 是**累计**文本（宿主每来一帧就 `text + delta` 拼一次）。拿不到增量，
- * 只能自己减：本文件算出「这一拍新增了哪些字符」。
- *
- * 这一步必须是纯函数：差分写错会直接变成读数翻倍（重复计）或恒为 0（漏计），
- * 只能靠断言钉住。
- *
- * ## 哪些块的文本要计入
- *
- * 只算 `text` 与 `reasoning`：思考也是模型真实产出的字（官方 `outputTokens` 含它），
- * 而 `tool-call` 的参数不算（那部分不在 `outputTokens` 的口径里）。
- *
- * @module dsh-token-tps-stats/src/client/progress
- */
-
+/** 对会话快照里的累计正文与思考做差分。 */
 /** 一条流（turn/step）的标识。 */
 export type StreamKey = string;
 
@@ -67,6 +29,8 @@ export interface ProgressDelta {
   readonly pieces: readonly string[];
   /** 供下一次采样用的新基线。 */
   readonly baseline: ProgressBaseline;
+  /** The previous snapshot is still a prefix, so its token estimate can be reused. */
+  readonly appendOnly: boolean;
 }
 
 /**
@@ -98,7 +62,7 @@ export function textOfBlocks(blocks: unknown): (string | undefined)[] {
  *
  * ## 三条规则（都是踩坑后才定的）
  *
- * 1. **没有基线、或流变了（换 turn/step）**：只记基线、**不产出字符**。
+ * 1. **没有基线、或流变了（换 turn/step）**：默认只记基线。调用方确认新步骤时可计入首份快照。
  *    插件在流式进行中才挂上是常事（切会话、槽位重挂）；把当时已经累计的几百上千字
  *    一次性算成「刚到的字」，读数会直接冲顶 —— 那正是用户之前报的「冲到 1000 多」。
  * 2. **块变长且旧文本仍是前缀**：新的部分就是尾巴。
@@ -113,24 +77,29 @@ export function newTextSince(
   baseline: ProgressBaseline | undefined,
   blocks: unknown,
   stream: StreamKey,
+  includeFirst = false,
 ): ProgressDelta {
   const texts = textOfBlocks(blocks);
   const next: ProgressBaseline = { stream, texts };
-  if (baseline === undefined || baseline.stream !== stream) return { pieces: [], baseline: next };
+  if (baseline === undefined || baseline.stream !== stream) {
+    return {
+      pieces: includeFirst ? texts.filter((text): text is string => Boolean(text)) : [],
+      baseline: next,
+      appendOnly: false,
+    };
+  }
   const pieces: string[] = [];
   const previous = baseline.texts;
+  // A replacement and an insertion in the same snapshot may be a compacted block moving.
+  if (previous.some((text, index) => text && !texts[index]?.startsWith(text))) {
+    return { pieces, baseline: next, appendOnly: false };
+  }
   for (let index = 0; index < texts.length; index += 1) {
     const current = texts[index];
     if (current === undefined || current === "") continue;
     const last = previous[index];
-    if (last === undefined) {
-      // 新出现的块：整段都是这一拍之前没见过的字。
-      pieces.push(current);
-      continue;
-    }
-    if (current.length <= last.length) continue;
-    if (!current.startsWith(last)) continue;
-    pieces.push(current.slice(last.length));
+    const length = last?.length ?? 0;
+    if (current.length > length) pieces.push(current.slice(length));
   }
-  return { pieces, baseline: next };
+  return { pieces, baseline: next, appendOnly: true };
 }

@@ -184,12 +184,6 @@ describe("平滑曲线", () => {
     expect(geometry.line).not.toContain("C");
   });
 
-  it("填充闭合到基线 `Z`，且以折线 path 开头", () => {
-    const geometry = buildGeometry([0, 5, 3], { width: 100, height: 40, max: 10 });
-    expect(geometry.area.endsWith("Z")).toBe(true);
-    expect(geometry.area.startsWith(geometry.line)).toBe(true);
-  });
-
   it("空序列给空 path（调用方据此跳过绘制）", () => {
     expect(buildGeometry([], { width: 100, height: 40, max: 10 }).line).toBe("");
   });

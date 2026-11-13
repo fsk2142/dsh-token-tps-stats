@@ -94,6 +94,28 @@ describe("槽位注册：先注入声明，再注册", () => {
     expect(log.map((row) => row.id)).toEqual(["token-tps-stats", "token-tps-stats-chart"]);
   });
 
+  it("胶囊从自己的会话绑定借用事件源，缺少服务时仍能注册", () => {
+    let getEventSource: ((id: string) => unknown) | undefined;
+    const eventSource = { getSnapshot: () => ({ revision: 0 }), subscribe: () => () => {} };
+    const sessions = {
+      binding(id: string) {
+        if (this === sessions && id === "session-A") return { eventSource };
+      },
+    };
+    const slots = {
+      register(spec: { id: string; inject?: () => { tpsEventSourceFor: (id: string) => unknown } }) {
+        if (spec.id === "token-tps-stats") getEventSource = spec.inject?.().tpsEventSourceFor;
+      },
+    };
+    installTpsPill({ inject: (_names, install) => install({ slots } as never) });
+    expect(getEventSource?.("session-A")).toBeUndefined();
+    installTpsPill({ inject: (_names, install) => install({
+      slots, get: (name: string) => name === "sessions" ? sessions : undefined,
+    } as never) });
+    expect(getEventSource?.("session-A")).toBe(eventSource);
+    expect(getEventSource?.("session-B")).toBeUndefined();
+  });
+
   it("声明早就存在时，`inject` 会立刻回调 → 立刻注册", () => {
     const log: Registered[] = [];
     const ctx = makeContext(

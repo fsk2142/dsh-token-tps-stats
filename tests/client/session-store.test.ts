@@ -1,14 +1,12 @@
 /**
- * **差分与摊开的单测**（2026-11-13）。
+ * **快照差分与会话步统计的单测**（2026-11-13）。
  *
- * 这两条是「每个会话各自统计」的地基：差分错了会重复计/漏计，摊开错了会让积压
- * 之后的读数冲顶（用户报的「峰值 1000 多」）。所以边界都钉在这里。
+ * 覆盖增量差分、会话隔离和结算快照更新。
  */
-import { beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { newTextSince, streamKeyOf, textOfBlocks, type ProgressBaseline } from "../../src/client/progress";
-import { claimSessionStream, pushNodes, pushSnapshot, readingOf, releaseSessionStream, resetSessionStreamsForTests } from "../../src/client/session-store";
-import { spreadCounts } from "../../src/client/spread";
+import { createSessionStream, pushNodes, pushSnapshot } from "../../src/client/session-store";
 
 describe("块文本提取", () => {
   it("只认 text 与 reasoning（工具参数不算输出速度）", () => {
@@ -63,6 +61,16 @@ describe("差分：算出这一拍新增的字", () => {
     expect(delta.pieces).toEqual([]);
   });
 
+  it("块重排时不会把移到新下标的已有文本重算", () => {
+    const baseline: ProgressBaseline = { stream: "1:1", texts: ["已有思考"] };
+    const delta = newTextSince(baseline, [
+      { kind: "text", text: "新正文" },
+      { kind: "reasoning", text: "已有思考" },
+    ], "1:1");
+    expect(delta.pieces).toEqual([]);
+    expect(delta.baseline.texts).toEqual(["新正文", "已有思考"]);
+  });
+
   it("新出现的块整段算作新增", () => {
     const baseline: ProgressBaseline = { stream: "1:1", texts: [undefined] };
     const delta = newTextSince(baseline, [{ kind: "text", text: "刚开的块" }], "1:1");
@@ -93,85 +101,48 @@ describe("差分：算出这一拍新增的字", () => {
   });
 });
 
-describe("摊开：积压的字按真实时间段铺开", () => {
-  it("时间跨度为 0 → 只一片（记在当下）", () => {
-    expect(spreadCounts({ cjk: 10, other: 0 }, 1_000, 1_000)).toEqual([{ at: 1_000, cjk: 10, other: 0 }]);
-  });
-
-  it("**3 秒的积压摊成 3 片**（不摊的话这 3 秒的字会全挤进最近 1 秒的窗口）", () => {
-    const slices = spreadCounts({ cjk: 0, other: 300 }, 0, 3_000, 1_000);
-    expect(slices).toHaveLength(3);
-    expect(slices.map((slice) => slice.at)).toEqual([1_000, 2_000, 3_000]);
-    for (const slice of slices) expect(slice.other).toBe(100);
-  });
-
-  it("**总量严格守恒**（除不尽的零头进最后一片）", () => {
-    const slices = spreadCounts({ cjk: 7, other: 10 }, 0, 3_000, 1_000);
-    expect(slices.reduce((sum, slice) => sum + slice.cjk, 0)).toBe(7);
-    expect(slices.reduce((sum, slice) => sum + slice.other, 0)).toBe(10);
-  });
-
-  it("没有字符时不产出切片", () => {
-    expect(spreadCounts({ cjk: 0, other: 0 }, 0, 5_000)).toEqual([]);
-  });
-});
-
 describe("会话状态：各算各的", () => {
-  beforeEach(() => {
-    resetSessionStreamsForTests();
-  });
-
   /**
    * 按生产的节奏跑一段：每 100ms 采一拍快照，同时读一次数。
    *
-   * **必须边走边读数**：速度计是「一阶低通」，第一拍读数从 0 起步（用户要的
-   * 「慢慢爬上去」），所以只在最后一刻读一次是 0，测不出任何东西。
    * @param entry - 会话状态。
    * @param frames - 每一拍的累计文本长度。
    * @param from - 起始时刻。
    * @returns 采样过程中读到的最大读数。
    */
-  function drive(entry: ReturnType<typeof claimSessionStream>, frames: readonly number[], from: number): number {
+  function drive(entry: ReturnType<typeof createSessionStream>, frames: readonly number[], from: number): number {
     let at = from;
     let peak = 0;
     for (const length of frames) {
       at += 100;
       pushSnapshot(entry, { turn: 1, step: 1, blocks: [{ kind: "text", text: "x".repeat(length) }] }, at);
-      const reading = readingOf(entry, at);
+      const reading = entry.meter.reading(at);
       if (reading > peak) peak = reading;
     }
     return peak;
   }
 
-  it("**两个会话互不影响**（同一个 id 永远拿到同一份，不同 id 是两份）", () => {
-    const a = claimSessionStream("A");
-    const b = claimSessionStream("B");
-    expect(a).not.toBe(b);
-    expect(claimSessionStream("A")).toBe(a);
-  });
-
   it("只有 B 输出时，A 的读数恒为 0", () => {
-    const a = claimSessionStream("A");
-    const b = claimSessionStream("B");
+    const a = createSessionStream("A");
+    const b = createSessionStream("B");
     // 每拍 80 字，20 拍 = 1600 字，约 3 秒 —— 足够让 B 的指针爬上去。
     const frames = Array.from({ length: 20 }, (_value, index) => 80 * (index + 1));
     expect(drive(b, frames, 1_000_000)).toBeGreaterThan(0);
-    expect(readingOf(a, 1_000_000 + 20 * 100)).toBe(0);
+    expect(a.meter.reading(1_000_000 + 20 * 100)).toBe(0);
   });
 
-  it("**切会话不会把上一个会话的曲线带过来**（释放后再认领是全新的一份）", () => {
-    const first = claimSessionStream("A");
+  it("**重新挂载会话时使用全新的采集状态**", () => {
+    const first = createSessionStream("A");
     const frames = Array.from({ length: 20 }, (_value, index) => 80 * (index + 1));
     expect(drive(first, frames, 1_000_000)).toBeGreaterThan(0);
-    releaseSessionStream(first);
-    const again = claimSessionStream("A");
+    const again = createSessionStream("A");
     expect(again).not.toBe(first);
     // 新的一份没有任何基线，读数从 0 起步。
-    expect(readingOf(again, 1_000_000 + 20 * 100)).toBe(0);
+    expect(again.meter.reading(1_000_000 + 20 * 100)).toBe(0);
   });
 
   it("`partial` 为空时只清基线，不产字符", () => {
-    const entry = claimSessionStream("A");
+    const entry = createSessionStream("A");
     const frames = Array.from({ length: 5 }, (_value, index) => 80 * (index + 1));
     drive(entry, frames, 1_000_000);
     expect(pushSnapshot(entry, null, 1_000_500)).toBe(false);
@@ -179,12 +150,8 @@ describe("会话状态：各算各的", () => {
 });
 
 describe("pushNodes：每步的真实用量", () => {
-  beforeEach(() => {
-    resetSessionStreamsForTests();
-  });
-
   /** 造一个带 usage 与 timing 的助手节点。 */
-  const assistantNode = (turn: number, step: number, extra: Record<string, unknown> = {}): unknown => ({
+  const assistantNode = (turn: number, step: number, extra: Record<string, unknown> = {}) => ({
     kind: "assistant",
     turn,
     step,
@@ -194,7 +161,7 @@ describe("pushNodes：每步的真实用量", () => {
   });
 
   it("把已结束节点的 usage 记进步账", () => {
-    const entry = claimSessionStream("A");
+    const entry = createSessionStream("A");
     pushNodes(entry, [assistantNode(1, 1)]);
     const row = entry.steps.rows(5)[0]!;
     expect(row.outputTokens).toBe(300);
@@ -202,24 +169,68 @@ describe("pushNodes：每步的真实用量", () => {
     expect(row.cacheReadTokens).toBe(900);
   });
 
+  it("宿主快照移除或更正已完成节点时，表格同步更新", () => {
+    const entry = createSessionStream("A");
+    pushNodes(entry, [assistantNode(1, 1), assistantNode(1, 2)]);
+    pushNodes(entry, [assistantNode(1, 2, { usage: { outputTokens: 42 } })]);
+    expect(entry.steps.rows(5).map(({ step, outputTokens }) => [step, outputTokens])).toEqual([[2, 42]]);
+    pushNodes(entry, []);
+    expect(entry.steps.rows(5)).toEqual([]);
+  });
+
+  it("只在读取表格时解析用量，长会话只解析最近的步骤", () => {
+    const entry = createSessionStream("A");
+    const parsed: number[] = [];
+    const nodes = Array.from({ length: 500 }, (_, index) => {
+      const step = index + 1;
+      const node = assistantNode(1, step);
+      return { ...node, get usage() { parsed.push(step); return { outputTokens: step }; } };
+    });
+    pushNodes(entry, nodes);
+    expect(parsed).toHaveLength(0);
+    expect(entry.steps.rows(5).map(({ step }) => step)).toEqual([500, 499, 498, 497, 496]);
+    expect(parsed).toHaveLength(40);
+    entry.steps.rows(20);
+    expect(parsed).toHaveLength(40);
+  });
+
+  it("乱序的结算快照也按轮次和步号保留最新步骤", () => {
+    const entry = createSessionStream("A");
+    const nodes = Array.from({ length: 100 }, (_, index) => assistantNode(1, 101 - index));
+    pushNodes(entry, [assistantNode(2, 1), ...nodes, assistantNode(1, 101, { usage: { outputTokens: 900 } })]);
+    expect(entry.steps.rows(4).map(({ turn, step, outputTokens }) => [turn, step, outputTokens])).toEqual([
+      [2, 1, 300], [1, 101, 900], [1, 100, 300], [1, 99, 300],
+    ]);
+  });
+
+  it("结算快照更新时保留正在生成的下一步", () => {
+    const entry = createSessionStream("A");
+    pushSnapshot(entry, { turn: 1, step: 3, blocks: [{ kind: "text", text: "正文" }] }, 4_000);
+    pushNodes(entry, [assistantNode(1, 2)]);
+    expect(entry.steps.rows(2).map(({ step, running }) => [step, running])).toEqual([[3, true], [2, false]]);
+  });
+
   it("**同一数组引用第二次不重复处理**（会话越长越省）", () => {
-    const entry = claimSessionStream("A");
+    const entry = createSessionStream("A");
     const nodes = [assistantNode(1, 1)];
+    let updates = 0;
+    const stop = entry.steps.subscribe(() => { updates += 1; });
     pushNodes(entry, nodes);
     pushNodes(entry, nodes);
     expect(entry.steps.rows(20)).toHaveLength(1);
-    expect(entry.nodesSeen).toBe(nodes);
+    expect(updates).toBe(1);
+    stop();
   });
 
   it("换了数组（哪怕内容相同）也会再看一遍 —— 幂等，不会多出行", () => {
-    const entry = claimSessionStream("A");
+    const entry = createSessionStream("A");
     pushNodes(entry, [assistantNode(1, 1)]);
     pushNodes(entry, [assistantNode(1, 1)]);
     expect(entry.steps.rows(20)).toHaveLength(1);
   });
 
   it("跳过非助手节点、缺 turn/step 或 usage 的节点", () => {
-    const entry = claimSessionStream("A");
+    const entry = createSessionStream("A");
     pushNodes(entry, [
       { kind: "user", turn: 1, step: 1 },
       { kind: "assistant", turn: "x", step: 1, usage: { outputTokens: 1 } },
@@ -231,23 +242,57 @@ describe("pushNodes：每步的真实用量", () => {
   });
 
   it("非数组输入安全返回", () => {
-    const entry = claimSessionStream("A");
+    const entry = createSessionStream("A");
     expect(() => pushNodes(entry, undefined)).not.toThrow();
     expect(() => pushNodes(entry, {})).not.toThrow();
+  });
+
+  it("步骤完成但宿主未上报用量时，表格保留该步并显示缺失值", () => {
+    const entry = createSessionStream("A");
+    const snapshot = (text: string) => ({ turn: 1, step: 1, blocks: [{ kind: "text", text }] });
+    pushSnapshot(entry, snapshot(""), 1_000);
+    pushSnapshot(entry, snapshot("流式文本"), 2_000);
+    expect(entry.steps.rows(1)[0]?.running).toBe(true);
+    pushSnapshot(entry, null, 3_000);
+    pushNodes(entry, [assistantNode(1, 1, {
+      usage: undefined, timing: { stepStartTime: 1_000, completedTime: 3_000 },
+    })]);
+    expect(entry.steps.rows(1)[0]).toMatchObject({ running: false, outputTokens: undefined, speed: undefined });
+  });
+});
+
+describe("进行中的输出来自当前快照", () => {
+  const snapshot = (text: string) => ({ turn: 1, step: 1, blocks: [{ kind: "text", text }] });
+
+  it("中途挂载显示已有输出，但已有文本不进入实时 TPS", () => {
+    const entry = createSessionStream("A");
+    expect(pushSnapshot(entry, snapshot("中".repeat(1_000)), 1_000)).toBe(false);
+    expect(entry.steps.rows(1)[0]?.outputTokens).toBe(1_000);
+    expect(entry.meter.reading(1_500)).toBe(0);
+    pushSnapshot(entry, snapshot("中".repeat(1_010)), 1_100);
+    expect(entry.steps.rows(1)[0]?.outputTokens).toBe(1_010);
+  });
+
+  it("重试清空并替换文本时，输出只显示当前尝试", () => {
+    const entry = createSessionStream("A");
+    pushSnapshot(entry, null, 1_000);
+    pushSnapshot(entry, snapshot("中".repeat(1_000)), 1_100);
+    pushSnapshot(entry, snapshot(""), 1_200);
+    expect(entry.steps.rows(1)).toEqual([]);
+    pushSnapshot(entry, snapshot("新".repeat(10)), 1_300);
+    expect(entry.steps.rows(1)[0]?.outputTokens).toBe(10);
+    pushSnapshot(entry, snapshot("替换"), 1_400);
+    expect(entry.steps.rows(1)[0]?.outputTokens).toBe(2);
   });
 });
 
 describe("generationMs：速度在步结束后也要留住（2026-11-13 用户反馈）", () => {
-  beforeEach(() => {
-    resetSessionStreamsForTests();
-  });
-
   /**
    * 造一个助手节点（字段名与宿主 `finalNode` 完全一致）。
    * @param timing - 宿主的 `timing`。
    * @returns 节点。
    */
-  const nodeWith = (timing: Record<string, unknown>): unknown => ({
+  const nodeWith = (timing: Record<string, unknown>) => ({
     kind: "assistant",
     turn: 1,
     step: 1,
@@ -257,37 +302,49 @@ describe("generationMs：速度在步结束后也要留住（2026-11-13 用户�
 
   /** 记一条人，返回它的速度。 */
   const speedOf = (timing: Record<string, unknown>): number | undefined => {
-    const entry = claimSessionStream("A");
+    const entry = createSessionStream("A");
     pushNodes(entry, [nodeWith(timing)]);
     return entry.steps.rows(1)[0]?.speed;
   };
 
-  it("**有首 token 时刻**：用 `completedTime − firstTokenTime`", () => {
-    // 600 token / 2 秒 = 300 tok/s。
-    expect(speedOf({ stepStartTime: 500, firstTokenTime: 1_000, completedTime: 3_000 })).toBeCloseTo(300, 6);
+  it("有首包时间时，仍使用从步骤开始到模型完成的 2.5 秒", () => {
+    expect(speedOf({ stepStartTime: 500, firstTokenTime: 1_000, completedTime: 3_000 })).toBe(240);
   });
 
-  it("**首 token 是 `null`**（这一步没有可识别的 token delta）→ 退回 `stepStartTime`", () => {
-    /*
-     * 用户截图里那些步全是「只有 tool-call 块」：宿主判 `isTokenDelta` 时
-     * `argumentsDelta` 为空就不算首 token，于是 `firstTokenTime` 是 `null`。
-     * 早先只实现了上一种，这些步就永远显示 `—`。
-     *
-     * 工具在 `assistant/message` **之后**才跑，所以 `completedTime − stepStartTime`
-     * 仍然是纯生成时间。600 token / 2 秒 = 300 tok/s。
-     */
+  it("首包缺失或集中在结束前 1ms，使用同一段模型耗时", () => {
     expect(speedOf({ stepStartTime: 1_000, firstTokenTime: null, completedTime: 3_000 })).toBeCloseTo(300, 6);
+    expect(speedOf({ stepStartTime: 1_000, firstTokenTime: 2_999, completedTime: 3_000 })).toBeCloseTo(300, 6);
   });
 
-  it("两个时刻都缺 → `—`（不拿墙钟凑数）", () => {
-    expect(speedOf({ completedTime: 3_000 })).toBeUndefined();
+  it("缺步骤开始时间或完成时间时不估算", () => {
+    expect(speedOf({ firstTokenTime: 2_000, completedTime: 3_000 })).toBeUndefined();
+    expect(speedOf({ stepStartTime: 2_000 })).toBeUndefined();
   });
 
   it("时刻倒挂（时钟回拨）→ `—`", () => {
     expect(speedOf({ stepStartTime: 9_000, firstTokenTime: 8_000, completedTime: 3_000 })).toBeUndefined();
   });
 
-  it("首 token 比完成晚 → 退回 `stepStartTime` 而不是算成负数", () => {
-    expect(speedOf({ stepStartTime: 1_000, firstTokenTime: 5_000, completedTime: 3_000 })).toBeCloseTo(300, 6);
+  it("页面只观察到最后一段输出，结算速度和重新打开会话时一致", () => {
+    const entry = createSessionStream("A");
+    const snapshot = (text: string) => ({ turn: 1, step: 1, blocks: [{ kind: "text", text }] });
+    pushSnapshot(entry, snapshot("此前输出"), 10_000);
+    pushSnapshot(entry, snapshot("此前输出加上最后一包"), 11_000);
+    const timing = { stepStartTime: 1_000, firstTokenTime: 5_000, completedTime: 11_000 };
+    pushNodes(entry, [nodeWith(timing)]);
+    expect(entry.steps.rows(1)[0]?.speed).toBe(60);
+    expect(entry.steps.rows(1)[0]?.speed).toBe(speedOf(timing));
+  });
+
+  it("补载历史时仍显示最近的轮次和步骤", () => {
+    const entry = createSessionStream("A");
+    const timing = { stepStartTime: 1_000, completedTime: 2_000 };
+    const node = (turn: number, step: number) => ({ ...nodeWith(timing), turn, step });
+    const recent = [node(2, 10), node(2, 11), node(3, 1)];
+    pushNodes(entry, recent);
+    pushNodes(entry, [node(1, 30), node(2, 8), node(2, 9), ...recent]);
+    expect(entry.steps.rows(5).map(({ turn, step }) => [turn, step])).toEqual([
+      [3, 1], [2, 11], [2, 10], [2, 9], [2, 8],
+    ]);
   });
 });

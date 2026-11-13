@@ -1,210 +1,87 @@
-/**
- * **折线图用的历史记录**（2026-11-12，第 3 步）。
- *
- * ## 为什么单独一个模块
- *
- * `tps-meter.ts` 只保留最近 9 秒（那是胶囊读数需要的跨度）；折线图要的是
- * 「一段时间内的变化」，需要更长的历史。两件事放进同一个累加器会让那个已经
- * 稳定的计算核心变复杂，所以这里是**另一个**累加器：纯函数 + 一个模块级单例，
- * 不碰 React、不碰宿主，可以完整单测。
- *
- * ## 为什么是「每秒一个桶」而不是定时采样
- *
- * 定时采样（每 500ms 读一次胶囊）需要在**空闲时也继续跑定时器**，而且采到的是
- * 已经平滑过的读数 —— 折线图等于把 9 秒平滑又叠加一次，看不出真实起伏。
- *
- * 这里改成**按秒聚合原始字符**：只有帧到达时才写桶，**空闲时零开销**（没有定时器）。
- * 画图时再对每个秒点做一次「最近 9 秒」的滑动平均 —— 与胶囊读数**同一口径**
- *（`TPS_WINDOWS × TPS_WINDOW_MS`），所以折线图和胶囊不会各说各话。
- *
- * ## 为什么最后一点落在「整秒边界」
- *
- * 当前这一秒只过了 300ms 时，桶里只有 300ms 的字；直接按整秒画，最后一点会
- * 塌下去一个坑（每次都塌），看起来像抖动。所以时间轴只画**已走完的秒**：
- * 最后一点是「上一个整秒边界」，最多晚 1 秒，但形状是诚实的。
- *
- * ## 复用哪个换算
- *
- * 直接复用 `tps-meter.ts` 的 `countChars` 与 `tokensOf` —— 折线图和胶囊必须用
- * 同一套系数，任何一处改动都自动同步，不给自己留「两个模块各算一套」的机会。
- *
- * @module dsh-token-tps-stats/src/client/tps-history
- */
-
-import { countChars, TPS_WINDOWS, tokensOf } from "./tps-meter";
-
-/** 桶宽（毫秒）：1 秒一个桶，与胶囊的窗口同宽。 */
-const BIN_MS = 1_000;
-
-/** 平滑窗口数：与胶囊一致（9 × 1 秒）。 */
-const SMOOTH_WINDOWS = TPS_WINDOWS;
-
-/**
- * 保留多久的历史（秒）。
- *
- * 300 秒 = 5 分钟：用户后来要「1 分钟 / 3 分钟 / 5 分钟」三档，所以保留期跟着拉到
- * 最长那一档。内存仍是 300 个小数对，不到 20KB。
- */
-export const TPS_HISTORY_SECONDS = 300;
-
-/** 折线图默认展示的时长（秒）。 */
+export const TPS_SAMPLE_MS = 100;
 export const TPS_CHART_DEFAULT_SECONDS = 60;
-
-/** 折线图可选的时长（秒）：上限受 {@link TPS_HISTORY_SECONDS} 限制。 */
 export const TPS_CHART_RANGES = [60, 180, 300] as const;
-
-/** 可选时长的类型。 */
 export type TpsChartRange = (typeof TPS_CHART_RANGES)[number];
 
-/** 折线图上的一个点。 */
+const RETENTION_MS = 300_000;
+// A delayed UI tick may arrive after a suspension. Do not extend the last reading across the gap.
+const MAX_HOLD_MS = 2 * TPS_SAMPLE_MS;
+
 export interface TpsSeriesPoint {
-  /** 距今多少秒（0 = 最后一个已走完的整秒）。 */
-  readonly secondsAgo: number;
-  /** 该点处的估算速度（tok/s，9 秒滑动平均）。 */
+  readonly at: number;
   readonly value: number;
 }
 
-/** 序列的统计值。 */
 export interface TpsSeriesSummary {
-  /** 区间平均值。 */
-  readonly average: number;
-  /** 区间峰值。 */
-  readonly peak: number;
-  /** 最新一点（最后一个已走完的整秒）。 */
   readonly latest: number;
+  readonly average: number;
+  readonly peak: number;
 }
 
-/** 历史记录的对外面（测试可注入替身）。 */
 export interface TpsHistory {
-  /** 记一帧文本（空串忽略）。 */
-  push(text: string, at: number): void;
-  /** 记**已经数好**的一批字符（调用方自己做过差分与摊开，见 `session-store.ts`）。 */
-  pushCounts(counts: { cjk: number; other: number }, at: number): void;
-  /** 画图用的序列：**最旧 → 最新**，长度恒为请求的秒数。 */
-  series(at: number, seconds: number): TpsSeriesPoint[];
-  /** 序列的统计值。 */
-  summary(at: number, seconds: number): TpsSeriesSummary;
+  record(at: number, value: number): void;
+  view(at: number, seconds: number): { points: TpsSeriesPoint[]; summary: TpsSeriesSummary };
 }
 
-/**
- * 造一个历史记录器。
- * @param options - `seconds` / `binMs` / `smoothWindows` 可注入（测试用）。
- * @returns 历史记录器。
- */
-export function createTpsHistory(
-  options: { seconds?: number; binMs?: number; smoothWindows?: number } = {},
-): TpsHistory {
-  const keepSeconds = options.seconds ?? TPS_HISTORY_SECONDS;
-  const binMs = options.binMs ?? BIN_MS;
-  const smoothWindows = options.smoothWindows ?? SMOOTH_WINDOWS;
-  /** key = 桶序号 `floor(at / binMs)`；只有收到过字的桶才存在（空桶即 0）。 */
-  const bins = new Map<number, { cjk: number; other: number }>();
+/** Record the displayed samples. Keep each second's peak at its measured position. */
+export function createTpsHistory(): TpsHistory {
+  let samples: TpsSeriesPoint[] = [];
+  let head = 0;
 
-  /** 当前时刻所属的桶序号。 */
-  const binIndexOf = (at: number): number => Math.floor(at / binMs);
-
-  /** 把一批字符计数记到某个秒桶里（两个 `push` 路径共用）。 */
-  const accumulate = (counts: { cjk: number; other: number }, at: number): void => {
-    const index = binIndexOf(at);
-    const bin = bins.get(index);
-    if (bin === undefined) bins.set(index, { cjk: counts.cjk, other: counts.other });
-    else {
-      bin.cjk += counts.cjk;
-      bin.other += counts.other;
+  const prune = (at: number): void => {
+    while (head < samples.length && samples[head]!.at + MAX_HOLD_MS < at - RETENTION_MS) head += 1;
+    if (head > 512 && head >= samples.length / 2) {
+      samples = samples.slice(head);
+      head = 0;
     }
-    prune(index);
-  };
-
-  /** 丢掉落出保留期的桶（保留期 = 历史长度 + 平滑窗口）。 */
-  const prune = (binIndex: number): void => {
-    const floor = binIndex - keepSeconds - smoothWindows;
-    for (const key of bins.keys()) {
-      if (key < floor) bins.delete(key);
-    }
-  };
-
-  /**
-   * 某一个桶的 token 数（空桶即 0）。
-   * @param index - 桶序号。
-   * @returns token 数。
-   */
-  const tokensIn = (index: number): number => {
-    const bin = bins.get(index);
-    return bin === undefined ? 0 : tokensOf(bin);
-  };
-
-  /**
-   * 在「已走完的整秒」区间上滚动算出每点的滑动平均（**O(秒数 + 窗口数)**）。
-   *
-   * ## 为什么不再让每个点各自扫一遍窗口（2026-11-13 优化）
-   *
-   * 原来的 `rateAt(boundary)` 每次都 `smoothWindows` 次 `Map.get`；一屏 300 秒就是
-   * 300 × 9 = 2700 次查找，而弹层打开时每 500ms 就重画一次。滑动窗只需要
-   * 「减去滑出的那个桶、加上滑入的那个桶」—— 查找次数降到 300 + 9。
-   *
-   * 语义与原实现完全相同：`rateAt(b) = (T[b] + T[b-1] + … + T[b-w+1]) / 窗口长度`，
-   * 空桶按 0（分母固定）。
-   * @param end - 最新那个边界（已走完的整秒）。
-   * @param requested - 要几个点。
-   * @param visit - 每个点（从旧到新）的回调。
-   */
-  const forEachRate = (end: number, requested: number, visit: (secondsAgo: number, value: number) => void): void => {
-    const windowMs = smoothWindows * binMs;
-    /** 最旧那个点的边界。 */
-    const first = end - requested + 1;
-    /** 先算出最旧点的窗口和。 */
-    let tokens = 0;
-    for (let step = 0; step < smoothWindows; step += 1) tokens += tokensIn(first - step);
-    for (let boundary = first; boundary <= end; boundary += 1) {
-      if (boundary > first) {
-        // 滑动一格：加进新桶，减去滑出窗口的那个桶。
-        tokens += tokensIn(boundary) - tokensIn(boundary - smoothWindows);
-      }
-      visit(end - boundary, windowMs > 0 ? (tokens / windowMs) * 1_000 : 0);
-    }
-  };
-
-  /** 造「最旧 → 最新」的点列（结尾落在最后一个已走完的整秒）。 */
-  const pointsAt = (at: number, seconds: number): TpsSeriesPoint[] => {
-    const end = binIndexOf(at);
-    prune(end);
-    const requested = Math.max(1, Math.floor(seconds));
-    const points: TpsSeriesPoint[] = [];
-    forEachRate(end, requested, (secondsAgo, value) => {
-      points.push({ secondsAgo, value });
-    });
-    return points;
   };
 
   return {
-    push: (text, at) => {
-      if (typeof text !== "string" || text === "") return;
-      accumulate(countChars(text), at);
+    record(at, value) {
+      const last = samples.at(-1);
+      if (last !== undefined && at < last.at) return;
+      if (last?.at === at) samples[samples.length - 1] = { at, value };
+      else samples.push({ at, value });
+      prune(at);
     },
-    pushCounts: (counts, at) => {
-      if (counts.cjk <= 0 && counts.other <= 0) return;
-      accumulate(counts, at);
-    },
-    series: (at, seconds) => pointsAt(at, seconds),
-    /*
-     * 统计值**不建点列**：弹层每 500ms 重画一次，`series()` 那 300 个对象只是为
-     * 了求平均/峰值/最新 —— 顺手在这一趟滑动窗里算掉（2026-11-13 优化）。
-     */
-    summary: (at, seconds) => {
-      const end = binIndexOf(at);
-      prune(end);
-      const requested = Math.max(1, Math.floor(seconds));
-      let sum = 0;
+    view(at, seconds) {
+      prune(at);
+      const span = Math.min(RETENTION_MS, Math.max(1, seconds) * 1_000);
+      const from = at - span;
+      const peaks = new Map<number, TpsSeriesPoint>();
+      let area = 0;
       let peak = 0;
       let latest = 0;
-      let count = 0;
-      forEachRate(end, requested, (_secondsAgo, value) => {
-        sum += value;
-        if (value > peak) peak = value;
-        latest = value;
-        count += 1;
-      });
-      return { average: count > 0 ? sum / count : 0, peak, latest };
+      let first = 0;
+      const addPeak = (point: TpsSeriesPoint): void => {
+        const bin = Math.floor(point.at / 1_000);
+        if ((peaks.get(bin)?.value ?? -1) < point.value) peaks.set(bin, point);
+        peak = Math.max(peak, point.value);
+      };
+      for (let index = head; index < samples.length; index += 1) {
+        const sample = samples[index]!;
+        if (sample.at > at) break;
+        const end = Math.min(at, samples[index + 1]?.at ?? at, sample.at + MAX_HOLD_MS);
+        const begin = Math.max(from, sample.at);
+        if (end >= begin) {
+          area += sample.value * (end - begin);
+          addPeak({ at: begin, value: sample.value });
+          if (begin === from) first = sample.value;
+          if (end === at) latest = sample.value;
+        }
+        const next = samples[index + 1]?.at ?? Infinity;
+        if (sample.value > 0 && end >= from && end < Math.min(next, at)) {
+          addPeak({ at: end, value: 0 });
+        }
+      }
+      const points: TpsSeriesPoint[] = [{ at: from, value: first }];
+      // Insert empty seconds too, so the chart does not interpolate across idle gaps.
+      for (let bin = Math.floor(from / 1_000); bin <= Math.floor(at / 1_000); bin += 1) {
+        const point = peaks.get(bin) ?? { at: bin * 1_000, value: 0 };
+        if (point.at > from && point.at < at) points.push(point);
+      }
+      points.push({ at, value: latest });
+      return { points, summary: { latest, average: area / span, peak } };
     },
   };
 }

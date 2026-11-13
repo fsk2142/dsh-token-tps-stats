@@ -39,10 +39,6 @@ export const TITLE_HEIGHT = 17;
 /** 副标题行高（11px 字 + `lineHeight: 16px`）。 */
 export const SUBTITLE_HEIGHT = 16;
 
-/** 步数页副标题下方额外留白（`marginBottom: 4px`）。**当前未使用** —— 那句提示
- * 已被 2026-11-13 删除，常量留着是为了「将来若加回一行说明」时有据可依。 */
-export const SUBTITLE_MARGIN_BOTTOM = 4;
-
 /** 头部按钮（`?` 与 `×`）的方形边长：与页签按钮同高，看起来是一组分段控件。 */
 export const HEADER_BUTTON_SIZE = 22;
 

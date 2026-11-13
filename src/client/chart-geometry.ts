@@ -15,6 +15,8 @@ export interface ChartGeometryOptions {
   readonly height: number;
   /** 纵轴最大值（tok/s）；`0` 会被兜成一个正数，避免除零。 */
   readonly max: number;
+  /** Positions in [0, 1] for time series with uneven intervals. */
+  readonly positions?: readonly number[];
 }
 
 /** 折线的几何结果。 */
@@ -27,15 +29,6 @@ export interface ChartGeometry {
    * 看起来就是一串直角台阶。
    */
   readonly line: string;
-  /**
-   * 折线下方的填充 path（闭合到基线）。
-   *
-   * **当前不再使用**（2026-11-12：本主题的 `brand-primary` 是近黑色，12% 叠在白卡片
-   * 上就是一片灰，用户明确要求「折线图里不要灰色的底」）。仍然算出来是因为它是纯几何、
-   * 不额外读状态：将来若换成浅色强调色（或换主题令牌），上层可以直接拿来用，不必
-   * 回头改这一层。
-   */
-  readonly area: string;
   /** 每个点的像素坐标（最旧 → 最新），画节点/标记用。 */
   readonly points: readonly { readonly x: number; readonly y: number }[];
   /** 纵轴实际使用的最大值。 */
@@ -168,7 +161,7 @@ export function axisTicks(max: number, count = 2): number[] {
  * - 纵轴按 `max` 归一，越界值被夹到 0..max（浮点误差不该画出格）。
  * @param values - 序列值（最旧 → 最新）。
  * @param options - 绘图区尺寸与纵轴最大值。
- * @returns 折线 / 填充 / 点的几何。
+ * @returns 折线和点的几何。
  */
 export function buildGeometry(values: readonly number[], options: ChartGeometryOptions): ChartGeometry {
   const width = Math.max(1, options.width);
@@ -177,7 +170,8 @@ export function buildGeometry(values: readonly number[], options: ChartGeometryO
   const count = values.length;
   const points: { x: number; y: number }[] = [];
   for (let index = 0; index < count; index += 1) {
-    const x = count === 1 ? width / 2 : (index / (count - 1)) * width;
+    const position = options.positions?.[index] ?? (count === 1 ? 0.5 : index / (count - 1));
+    const x = Math.min(1, Math.max(0, position)) * width;
     const raw = Number.isFinite(values[index]) ? values[index]! : 0;
     const clamped = Math.min(max, Math.max(0, raw));
     const y = height - (clamped / max) * height;
@@ -185,13 +179,9 @@ export function buildGeometry(values: readonly number[], options: ChartGeometryO
   }
   if (points.length === 0) {
     // 没有点也要返回可用的空串，调用方可以据此跳过绘制。
-    return { line: "", area: "", points: [], max };
+    return { line: "", points: [], max };
   }
-  const line = smoothPath(points);
-  const first = points[0]!;
-  const last = points[points.length - 1]!;
-  const area = `${line} L${last.x} ${round(height)} L${first.x} ${round(height)} Z`;
-  return { line, area, points, max };
+  return { line: smoothPath(points), points, max };
 }
 
 /**
