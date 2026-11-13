@@ -26,8 +26,8 @@
 | 远端 | `git@github.com:fsk2142/dsh-token-tps-stats.git` |
 | 版本 | `1.0.0` |
 | `tsc` | 干净 |
-| 单测 | **166 条全绿**（`tps-meter` 24 / `tps-history` 10 / `chart-geometry` 20 / `chart-store` 13 / `session-store` 30 / `step-history` 18 / `label` 7 / `install` 9 / `pacing` 11 / `live-buffer` 5 / `format` 16 / `replay-regression` 2），另有 `pnpm test:bundle` 用带 `this` 语义的假宿主跑构建产物 |
-| 构建 | 成功（`lib/client.js` **22.6 KB**（minify 后）/ gzip 8.4 KB；`lib/index.js` 1.7 KB） |
+| 单测 | **179 条全绿**（`tps-meter` 24 / `tps-history` 10 / `chart-geometry` 20 / `chart-store` 13 / `session-store` 30 / `step-history` 18 / `panel-metrics` 10 / `label` 7 / `install` 9 / `pacing` 11 / `live-buffer` 5 / `format` 20 / `replay-regression` 2），另有 `pnpm test:bundle` 用带 `this` 语义的假宿主跑构建产物 |
+| 构建 | 成功（`lib/client.js` **22.7 KB**（minify 后）/ gzip 8.4 KB；`lib/index.js` 1.7 KB） |
 | 装进 profile | **已装**（`desktop` profile，`file:` 链接到本目录；宿主读的就是 `lib/client.js`） |
 | 真机槽位 | `conversation.composer.dock` → `token-tps-stats`（order -1）；`shell.overlay` → `token-tps-stats-chart` |
 
@@ -47,7 +47,8 @@
 | `src/client/chart-geometry.ts` | **折线几何**：`axisScale`（阶梯 1/2/5/10/25/50/100/250…，108→150）、`axisTicks`（整数）、**保形平滑曲线**（单调三次 Hermite → 贝塞尔，不过冲） | 低（有单测） |
 | `src/client/chart-store.ts` | **弹层开关状态**：胶囊与弹层不共享 React 树，靠它交换「开没开 / 锚点 / 时长 / **看哪个会话**」；还存胶囊 DOM 元素供读当前矩形 | 低（有单测） |
 | `src/client/styles.ts` | **共享排版与表面**：官方胶囊那套字号/行高变量、弹层的白底 + elevation 阴影、文字与折线同色令牌 | 低 |
-| `src/client/format.ts` | `formatRate`（**一律取整**）、`formatTokens`（千分位）、`formatPercent` / `formatRatio`（整数百分比） | 低（有单测） |
+| `src/client/format.ts` | `formatRate`（**一律取整**）、`formatRateWithUnit`（**带 ` tok/s`**，单位只此一处定义）、`formatTokens`（千分位）、`formatPercent` / `formatRatio`（百分比） | 低（有单测） |
+| `src/client/panel-metrics.ts` | **弹层的高度账**：两页所有加数（行高 / 内边距 / 按钮高）与「折线图该多高」都由这里推出，保证「实时速度」与「每步平均 5 步」同高；`panelMinHeight()` 兜住空态 | 低（有单测，断言两页相等） |
 | `src/client/tps-pill.ts` | **胶囊**：官方同款内联样式 + 仪表图标 + 点开弹层（带上**本会话**那份状态）+ **定宽数字**；数据从 `useChat` 槽位属性读 | 中（样式改动要靠真机看） |
 | `src/client/tps-chart.ts` | **弹层**：`shell.overlay` + `position: fixed`，左上角两个页签（实时速度折线 / 每步输出表格）+ 档位切换 + Esc/点外面关闭；数据来自 `chart-store` 里那份会话状态 | 中 |
 | `src/client/install.ts` | **注册**：嵌套注入 `slots`，再用 `slots.inject` 等声明提交——**不直接 `register`**（直接注册在重启后会报 `slot "…" is not declared`）；注册胶囊与弹层（**不再注册事件定义**） | **高**（见下面「不能碰的边界」） |
@@ -81,7 +82,9 @@
 | 「这个顺序不对，应该先是缓存读取、未缓存输入、输出、缓存命中、平均速度，但是都用简写：读取 / 输入 / 输出 / 命中 / 速度」（2026-11-13） | 列顺序与简称照这条改。「输入」读 `usage.inputTokens`（**未缓存**那部分），**不是** `totalTokens − outputTokens`（那会把缓存读取算进来，六位数变成天文数字，正是用户截图里 36 万那列的来源）；「命中」= 读取 ÷（读取 + 输入 + 写入） |
 | 「我们这个弹窗框可以再宽一些」（2026-11-13） | 弹层宽 344px → **440px**；「每步」表格列宽重排成 `40/76/76/56/60/88` + 5 个 4px 间隙 = 416px，正好等于内容宽，六列不再挤 |
 | 「为什么命中率都是 100%？按理说应该不会存在 100 吧」（2026-11-13） | 不是算法问题，是**显示精度**：他截图那行 `读取 394,880 / 输入 496` → 真实 99.87%，四舍五入到整数就成了 100。`formatRatio` 改成**统一保留两位小数**（用户随后说「可以用两位小数」）：99.87% 显示 `99.87%`、62% 显示 `62.00%`，只有**恰好等于 1** 才显示 `100%` |
-| 「这个速度为什么在步数结束后就消失了，不应该是保留下来吗」（2026-11-13） | 根因：`finalNode.timing.firstTokenTime` 在**只吐工具参数**的步上是 `null`（宿主 `isTokenDelta` 对空的 `argumentsDelta` 返回 false），而我第一版只实现了 `completedTime − firstTokenTime`，于是这些步结束后算不出时长、显示 `—`。**事件顺序 `step/start → assistant/message → tool/call → tool/result → step/end` 说明工具在 message 之后才跑**，所以 `completedTime − stepStartTime` 仍然是纯生成时间 —— 现在作为退路补上。真机上那些 `—` 行会变成 14~58 tok/s 这类读数 |主 `formatCacheHitPercent` 的思路），99.87% 读 `99.9%`；只有**恰好等于 1** 才显示 `100%` |`argsRaw` 为空 = 还在生成）。「工具调用中」复用数字那块定宽位置，宽度与「4ch + ` tok/s`」几乎相等，阶段切换时不伸缩；它**只换文字，不进速度计** |
+| 「这个速度为什么在步数结束后就消失了，不应该是保留下来吗」（2026-11-13） | 根因：`finalNode.timing.firstTokenTime` 在**只吐工具参数**的步上是 `null`（宿主 `isTokenDelta` 对空的 `argumentsDelta` 返回 false），而我第一版只实现了 `completedTime − firstTokenTime`，于是这些步结束后算不出时长、显示 `—`。**事件顺序 `step/start → assistant/message → tool/call → tool/result → step/end` 说明工具在 message 之后才跑**，所以 `completedTime − stepStartTime` 仍然是纯生成时间 —— 现在作为退路补上。真机上那些 `—` 行会变成 14~58 tok/s 这类读数 |
+| 「实时速度和每步均的方框大小不一样，要求实时速度和每步平均的 5 步时候的方框长宽高大小一致」（2026-11-13） | 宽度本来就同为 440px，问题在**高度**。新增 `panel-metrics.ts` 把两页所有加数写成算式，反解出「折线图该多高」（118 → **125**，多出的 7px 给了绘图区 92 → 99），于是**时间页 == 5 步的步数页 == 190px**。另给面板挂 `minHeight: 236px` 兜住空态（0 步时只有 90px）。单测直接断言 `timeBodyHeight() === stepsBodyHeight(5)` |
+| 「这里当前 75 tok/s，但是后边的平均和峰值就没有单位了，至少统一一下吧」（2026-11-13） | 副标题原来只有「当前」带单位。新增 `formatRateWithUnit`（单位 `RATE_UNIT` 只此一处定义），三个读数各自带 ` tok/s`：`当前 75 tok/s · 平均 65 tok/s · 峰值 86 tok/s`。**没选**「只在最后一个补一次」—— 那种写法读者仍要往后跳三个数才找到单位，正是他抱怨的点 |主 `formatCacheHitPercent` 的思路），99.87% 读 `99.9%`；只有**恰好等于 1** 才显示 `100%` |`argsRaw` 为空 = 还在生成）。「工具调用中」复用数字那块定宽位置，宽度与「4ch + ` tok/s`」几乎相等，阶段切换时不伸缩；它**只换文字，不进速度计** |
 
 `tps-history` 的历史桶**也**改成同一口径（分母固定），否则折线图的点还会顶到天上。
 

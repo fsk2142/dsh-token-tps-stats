@@ -3,7 +3,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { formatPercent, formatRatio, formatRate, formatTokens } from "../../src/client/format";
+import { formatPercent, formatRatio, formatRate, formatRateWithUnit, formatTokens, RATE_UNIT } from "../../src/client/format";
 
 describe("速度：一律整数", () => {
   it("四舍五入到个位（读数本来就是估算，小数位是假的）", () => {
@@ -16,6 +16,30 @@ describe("速度：一律整数", () => {
     expect(formatRate(Number.NaN)).toBe("0");
     expect(formatRate(Number.POSITIVE_INFINITY)).toBe("0");
     expect(formatRate(-5)).toBe("0");
+  });
+});
+
+describe("速度带单位：每个读数都有 tok/s（用户 2026-11-13 要求）", () => {
+  it("**平均和峰值也要带单位**（用户看到的是「当前 75 tok/s · 平均 65 · 峰值 86」）", () => {
+    // 副标题那三个读数必须各自自足 —— 复制其中任何一段到别处都说得通。
+    expect(formatRateWithUnit(75)).toBe("75 tok/s");
+    expect(formatRateWithUnit(65)).toBe("65 tok/s");
+    expect(formatRateWithUnit(86)).toBe("86 tok/s");
+  });
+
+  it("整数规则不变（单位不改变取整）", () => {
+    expect(formatRateWithUnit(42.6)).toBe("43 tok/s");
+    expect(formatRateWithUnit(0)).toBe("0 tok/s");
+  });
+
+  it("非法值仍然落到 0，不出现 NaN tok/s", () => {
+    expect(formatRateWithUnit(Number.NaN)).toBe("0 tok/s");
+    expect(formatRateWithUnit(-5)).toBe("0 tok/s");
+  });
+
+  it("单位只此一处定义（改文案不会漏掉某个调用点）", () => {
+    expect(RATE_UNIT).toBe(" tok/s");
+    expect(formatRateWithUnit(1)).toBe(`1${RATE_UNIT}`);
   });
 });
 

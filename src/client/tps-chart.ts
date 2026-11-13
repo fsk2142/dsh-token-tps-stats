@@ -54,7 +54,7 @@ import {
   type ChartTab,
 } from "./chart-store";
 import type { DshEvent } from "./dom";
-import { formatRatio, formatRate, formatTokens } from "./format";
+import { formatRatio, formatRate, formatRateWithUnit, formatTokens } from "./format";
 import { CHART_SVG_HEIGHT, panelMinHeight } from "./panel-metrics";
 import type { SessionStream } from "./session-store";
 import { TPS_STEP_RANGES, type StepRow, type TpsStepRange } from "./step-history";
@@ -349,7 +349,13 @@ function renderPanel(state: ChartState, anchor: ChartAnchor | undefined): ReactE
     state.tab === "time"
       ? renderColumn({
           title: `实时速度 · 最近 ${rangeLabel(seconds)}`,
-          subtitle: `当前 ${formatRate(timeView.summary.latest)} tok/s · 平均 ${formatRate(timeView.summary.average)} · 峰值 ${formatRate(timeView.summary.peak)}`,
+          /*
+           * 三个读数**各自带单位**（2026-11-13 用户反馈）。
+           *
+           * 原来只有「当前」带 ` tok/s`，平均和峰值是光秃秃的数字：
+           * 「当前 75 tok/s · 平均 65 · 峰值 86」。
+           */
+          subtitle: `当前 ${formatRateWithUnit(timeView.summary.latest)} · 平均 ${formatRateWithUnit(timeView.summary.average)} · 峰值 ${formatRateWithUnit(timeView.summary.peak)}`,
           geometry: timeView.geometry,
           scale: timeView.scale,
           // 峰值为 0 才叫「这段时间还没有输出」；有起伏时别用一句话盖住曲线。
@@ -475,7 +481,7 @@ function renderStepTable(rows: readonly StepRow[], steps: TpsStepRange): ReactEl
       createElement(
         "span",
         { style: { textAlign: "end", whiteSpace: "nowrap" } },
-        row.speed === undefined ? "—" : `${formatRate(row.speed)} tok/s`,
+        row.speed === undefined ? "—" : formatRateWithUnit(row.speed),
       ),
     ),
   );

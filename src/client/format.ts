@@ -31,6 +31,38 @@ export function formatRate(value: number): string {
   return String(Math.round(clamped));
 }
 
+/** 速度单位（**每个读数都带**，2026-11-13 用户反馈）。 */
+export const RATE_UNIT = " tok/s";
+
+/**
+ * 带单位的速度读数（`"75 tok/s"`）。
+ *
+ * ## 为什么单位要写死在格式化里（2026-11-13 用户第二次反馈）
+ *
+ * 用户看着副标题那行说：
+ *
+ * > 这里当前 75 tok/s，但是后边的平均和峰值就没有单位了，至少统一一下吧
+ *
+ * 原来那一行是 `当前 75 tok/s · 平均 65 · 峰值 86` —— 只有第一个读数带单位，
+ * 后两个是光秃秃的数字。人多半会把它们读成「65 和 86 个什么」。
+ *
+ * 修法有两种：给三个都补单位（`平均 65 tok/s · 峰值 86 tok/s`），或者
+ * **只在最后补一次**（`当前 75 · 平均 65 · 峰值 86 tok/s`）。选了前者：
+ *
+ * - 后者更短，但 `当前 75` 后面紧跟的是「· 平均」，读者仍要往后跳三个数才知道
+ *   单位是什么 —— 那正是用户抱怨的地方；
+ * - 前者每一段自足，复制任意一段到别处也说得通；
+ * - 五个 ` tok/s` 才 30px，190px 高的面板不缺这点宽度。
+ *
+ * **单位跟着数字走**（而不是在调用方拼字符串），这样任何新加的读数只要用
+ * {@link formatRateWithUnit}，就不会再漏。
+ * @param value - tok/s。
+ * @returns 例如 `"75 tok/s"`。
+ */
+export function formatRateWithUnit(value: number): string {
+  return `${formatRate(value)}${RATE_UNIT}`;
+}
+
 /**
  * 把 token 数量格式化成显示文本（**千分位**）。
  *
