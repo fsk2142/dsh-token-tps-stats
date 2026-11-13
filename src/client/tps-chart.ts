@@ -56,7 +56,7 @@ import {
 import type { DshEvent } from "./dom";
 import { formatRatio, formatRate, formatRateWithUnit, formatTokens } from "./format";
 import { HELP_LABEL, HELP_SECTIONS } from "./help";
-import { HEADER_BUTTON_SIZE, CHART_SVG_HEIGHT, panelMinHeight } from "./panel-metrics";
+import { BUTTON_MARGIN_TOP, CHART_SVG_HEIGHT, HEADER_BUTTON_SIZE, panelMinHeight } from "./panel-metrics";
 import type { SessionStream } from "./session-store";
 import { TPS_STEP_RANGES, type StepRow, type TpsStepRange } from "./step-history";
 import { HAIRLINE, INK, INK_STRONG, SURFACE, TYPO } from "./styles";
@@ -355,6 +355,21 @@ function renderPanel(
         minHeight: `${panelMinHeight()}px`,
         boxSizing: "border-box",
         padding: `10px ${PANEL_PADDING_X}px 8px`,
+        /*
+         * **两页的档位按钮必须落在同一条底线上**（2026-11-13 用户要求）。
+         *
+         * > 一个底部对齐，一个上去了，建议你两边对齐一下，不然切换的时候整个页面
+         * > 都是跳了一下
+         *
+         * 光有 `minHeight` 只保证「面板外框一样高」：矮的那页（删掉那句提示后是
+         * 步数页，168px < 时间页 190px）会把自己的档位按钮留在 22px 之上，切页签
+         * 时按钮行就上下跳一下。
+         *
+         * 所以面板本身也改成一列 flex，页内容 `flex: 1` 吃掉多出来的高度，
+         * 档位按钮那排 `marginTop: auto` 贴到底 —— 两页按钮于是都压在同一个 `y` 上。
+         */
+        display: "flex",
+        flexDirection: "column",
         // 白色（浅色主题）不透明卡片 + 宿主浮层的 elevation；字体与官方胶囊同源。
         ...SURFACE,
         borderRadius: "12px",
@@ -512,7 +527,16 @@ function renderStepTable(rows: readonly StepRow[], steps: TpsStepRange): ReactEl
 
   return createElement(
     "div",
-    { style: { display: "flex", flexDirection: "column", gap: "2px", width: "100%" } },
+    {
+      style: {
+        display: "flex",
+        flexDirection: "column",
+        gap: "2px",
+        width: "100%",
+        // 吃掉多出来的高度：档位按钮那排才能被 `marginTop: auto` 推到底线。
+        flex: "1",
+      },
+    },
     createElement(
       "span",
       {
@@ -708,13 +732,24 @@ interface ColumnOptions {
  * 渲染**当前页**（标题 + 副标题 + SVG + 档位按钮）。
  *
  * 只有一页时不需要再包一层固定宽度：直接撑满弹层内容宽，曲线横向有更多像素。
+ *
+ * `flex: 1` 让这一列吃掉面板多出来的高度，配合按钮那排的 `marginTop: auto`，
+ * 档位按钮就贴在面板底线上（理由见 `renderPanel` 的说明）。
  * @param options - 这一页的参数。
  * @returns 元素。
  */
 function renderColumn(options: ColumnOptions): ReactElement {
   return createElement(
     "div",
-    { style: { display: "flex", flexDirection: "column", gap: "2px", width: "100%" } },
+    {
+      style: {
+        display: "flex",
+        flexDirection: "column",
+        gap: "2px",
+        width: "100%",
+        flex: "1",
+      },
+    },
     createElement(
       "span",
       {
@@ -945,13 +980,34 @@ function renderStepButtons(steps: TpsStepRange): ReactElement {
 
 /**
  * 一排档位按钮（两块共用同一套外观与布局）。
+ *
+ * `marginTop: "auto"`（而不是固定的 4px）：这一排永远贴着**面板底边**。
+ *
+ * 用户的抱怨是「一个底部对齐，一个上去了」——
+ *
+ * > 建议你两边对齐一下，不然切换的时候整个页面都是跳了一下，不好看
+ *
+ * 光靠面板 `minHeight` 只会让外框一样高：矮的那页（步数页 168px < 时间页 190px）
+ * 会把按钮留在上方，切页签时按钮行上下跳。交给 `auto` 之后，两页的按钮都在
+ * 面板底边的同一个 `y` 上，切页签时按钮不动 —— 动的只有上方那块图表/表格。
+ * 原来那个 4px 视觉间距由面板下内边距（8px）覆盖，实际留白反而更稳。
  * @param buttons - 按钮节点。
  * @returns 元素。
  */
 function renderButtonRow(buttons: ReactNode[]): ReactElement {
   return createElement(
     "div",
-    { style: { display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "6px", marginTop: "4px" } },
+    {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "flex-end",
+        gap: "6px",
+        marginTop: "auto",
+        // 兜底：即使外层不是 flex 列（理论上不会），也还有一点间距。
+        paddingTop: `${BUTTON_MARGIN_TOP}px`,
+      },
+    },
     ...buttons,
   );
 }

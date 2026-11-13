@@ -71,4 +71,17 @@ describe("版面：两个页签一样高（用户 2026-11-13 的要求）", () =
       TITLE_HEIGHT + COLUMN_GAP + STEP_HEADER_HEIGHT + COLUMN_GAP + COLUMN_GAP + BUTTON_MARGIN_TOP + BUTTON_HEIGHT,
     );
   });
+
+  it("**两页按钮的底边落在同一高度**（用户 2026-11-13：「两边对齐一下」）", () => {
+    /*
+     * 这条是上一版的补充：外框等高还不够，档位按钮也得等高。
+     *
+     * 渲染层靠 `marginTop: auto` 把按钮贴到底（flex 列 + 页内容 `flex: 1`），
+     * 所以「按钮底边」= 面板内容区底边 = `panelContentHeight()`。两页取高者之后
+     * 这个值相同 —— 这里断言那个前提仍然成立。
+     */
+    expect(panelContentHeight(5)).toBe(panelContentHeight());
+    // 10 / 20 步会更高，那时按钮也跟着往下走（行数决定的，不是错位）。
+    expect(panelContentHeight(10)).toBeGreaterThan(panelContentHeight());
+  });
 });
