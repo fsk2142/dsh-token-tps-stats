@@ -95,9 +95,11 @@ const SVG_HEIGHT = 118;
  *
  * 用固定像素而不是 `1fr`：数字列要等宽对齐，`1fr` 会把位数不同的行错开。
  * 六列 396px + 5 个 4px 间隙 = **416px**（= 弹层内容宽），正好铺满。
- * 读取/输入可能有六位数的千分位，所以给得最多。
+ *
+ * 「命中」给了 60px：99.9% 这类**带小数的读数**要放得下（整数位会进位到 100 时，
+ * 命中率会多留一到两位小数，见 `format.ts` 的 `formatRatio`）。
  */
-const STEP_GRID = "40px 80px 80px 64px 48px 84px";
+const STEP_GRID = "40px 76px 76px 56px 60px 88px";
 
 /** 弹层与胶囊之间的间距（像素）。 */
 const PANEL_GAP = 8;

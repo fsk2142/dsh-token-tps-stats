@@ -63,11 +63,34 @@ export function formatPercent(numerator: number | undefined, denominator: number
  *
  * 与 {@link formatPercent} 分开是因为调用方常常已经除过了（例如「读取 ÷ 提示总量」），
  * 再传一对分子分母只会让读代码的人怀疑自己看错。
+ *
+ * ## 为什么 99.995% 以上要保留小数（2026-11-13 用户反馈）
+ *
+ * 用户看到整张表的命中率都是 `100%`，问「为什么命中率都是 100%？按理说应该不会
+ * 存在 100 吧」。他截图那一行是 `读取 394,880 / 输入 496` —— 真实比例
+ * **99.87%**，四舍五入到整数就变成了 100。
+ *
+ * 这是显示精度问题，不是算法问题：真实满命中（未缓存输入与缓存写入都是 0）
+ * 才应该读 100。所以这里照宿主的 `formatCacheHitPercent` 同样的思路处理 ——
+ * 整数位会进位到 100 时**多留一位**，仍然不够就再留一位，最多三位；
+ * 只有比例**恰好等于 1** 才显示 `100%`。
  * @param ratio - 比例（0~1）；缺省时返回 `"—"`。
- * @returns 例如 `"97%"`。
+ * @returns 例如 `"99.9%"` / `"97%"` / `"100%"`。
  */
 export function formatRatio(ratio: number | undefined): string {
   if (ratio === undefined || !Number.isFinite(ratio)) return "—";
-  const percent = Math.round(ratio * 100);
-  return `${Math.min(100, Math.max(0, percent))}%`;
+  const clamped = Math.min(1, Math.max(0, ratio));
+  const percent = clamped * 100;
+  if (percent === 100) return "100%";
+  if (Math.round(percent) < 100) return `${Math.round(percent)}%`;
+  /*
+   * 会进位到 100 但**并不是** 100：逐位加小数，直到读数不再等于 100。
+   * 三位还不够接近（例如 99.9997）就停在 `99.999%` —— 再往里加位数没有任何
+   * 读者能从 440px 宽的表格里分辨出来，而且那会暗示一个根本不存在的精度。
+   */
+  const tenth = Math.round(percent * 10) / 10;
+  if (tenth < 100) return `${tenth.toFixed(1)}%`;
+  const hundredth = Math.round(percent * 100) / 100;
+  if (hundredth < 100) return `${hundredth.toFixed(2)}%`;
+  return "99.999%";
 }

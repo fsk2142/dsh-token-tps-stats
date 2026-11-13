@@ -26,8 +26,8 @@
 | 远端 | `git@github.com:fsk2142/dsh-token-tps-stats.git` |
 | 版本 | `1.0.0` |
 | `tsc` | 干净 |
-| 单测 | **148 条全绿**（`tps-meter` 23 / `tps-history` 9 / `chart-geometry` 20 / `chart-store` 13 / `session-store` 20 / `step-history` 18 / `label` 7 / `install` 9 / `pacing` 11 / `live-buffer` 5 / `format` 10 / `replay-regression` 2），另有 `pnpm test:bundle` 用带 `this` 语义的假宿主跑构建产物 |
-| 构建 | 成功（`lib/client.js` **22.2 KB**（minify 后）/ gzip 8.2 KB；`lib/index.js` 1.7 KB） |
+| 单测 | **153 条全绿**（`tps-meter` 23 / `tps-history` 9 / `chart-geometry` 20 / `chart-store` 13 / `session-store` 20 / `step-history` 18 / `label` 7 / `install` 9 / `pacing` 11 / `live-buffer` 5 / `format` 15 / `replay-regression` 2），另有 `pnpm test:bundle` 用带 `this` 语义的假宿主跑构建产物 |
+| 构建 | 成功（`lib/client.js` **22.4 KB**（minify 后）/ gzip 8.3 KB；`lib/index.js` 1.7 KB） |
 | 装进 profile | **已装**（`desktop` profile，`file:` 链接到本目录；宿主读的就是 `lib/client.js`） |
 | 真机槽位 | `conversation.composer.dock` → `token-tps-stats`（order -1）；`shell.overlay` → `token-tps-stats-chart` |
 
@@ -79,7 +79,8 @@
 | 「工具调用时不要显示 0」（2026-11-13 同上一问的取舍） | 725 条助手回复里 **374 条（52%）只有工具调用、没有可见文字** —— 那些步骤读数恒为 0，看着像插件停了。中途加过 `工具调用中` 状态，但**用户看过真机后改口**：「工具调用的时候还是不要显示文字，还是显示 0 tok/s 吧」—— 那一格只有「输出文本的速度」一个语义，插状态词会让它变含糊。现在已**完全撤掉** |
 | 「每步平均这里不用按照折线图显示，直接列出来第一步，输出多少，输入多少，命中多少，平均速率多少」（2026-11-13） | 第二个页签从折线改成**表格**。token 用量取宿主助手节点上的 `usage`（**真实账单**）；「速度」优先用我们观察到的「有字在流」时长，没观察到就退回宿主节点的 `timing`（`completedTime − firstTokenTime`，真正在生成的那一段），两者都没有才显示 `—` |
 | 「这个顺序不对，应该先是缓存读取、未缓存输入、输出、缓存命中、平均速度，但是都用简写：读取 / 输入 / 输出 / 命中 / 速度」（2026-11-13） | 列顺序与简称照这条改。「输入」读 `usage.inputTokens`（**未缓存**那部分），**不是** `totalTokens − outputTokens`（那会把缓存读取算进来，六位数变成天文数字，正是用户截图里 36 万那列的来源）；「命中」= 读取 ÷（读取 + 输入 + 写入） |
-| 「我们这个弹窗框可以再宽一些」（2026-11-13） | 弹层宽 344px → **440px**；「每步」表格列宽重排成 `40/80/80/64/48/84` + 5 个 4px 间隙 = 416px，正好等于内容宽，六列不再挤 |`argsRaw` 为空 = 还在生成）。「工具调用中」复用数字那块定宽位置，宽度与「4ch + ` tok/s`」几乎相等，阶段切换时不伸缩；它**只换文字，不进速度计** |
+| 「我们这个弹窗框可以再宽一些」（2026-11-13） | 弹层宽 344px → **440px**；「每步」表格列宽重排成 `40/76/76/56/60/88` + 5 个 4px 间隙 = 416px，正好等于内容宽，六列不再挤 |
+| 「为什么命中率都是 100%？按理说应该不会存在 100 吧」（2026-11-13） | 不是算法问题，是**显示精度**：他截图那行 `读取 394,880 / 输入 496` → 真实 99.87%，四舍五入到整数就成了 100。`formatRatio` 改成「整数位会进位到 100 时多留一位小数」（照宿主 `formatCacheHitPercent` 的思路），99.87% 读 `99.9%`；只有**恰好等于 1** 才显示 `100%` |`argsRaw` 为空 = 还在生成）。「工具调用中」复用数字那块定宽位置，宽度与「4ch + ` tok/s`」几乎相等，阶段切换时不伸缩；它**只换文字，不进速度计** |
 
 `tps-history` 的历史桶**也**改成同一口径（分母固定），否则折线图的点还会顶到天上。
 
