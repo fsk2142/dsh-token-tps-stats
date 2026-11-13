@@ -56,8 +56,15 @@ export interface TpsPluginContext {
 
 /** 宿主 `ctx.slots` 的最小面（只认 `inject` 与 `register`）。 */
 interface SlotsLike {
-  register?: (spec: Record<string, unknown>, component: unknown) => unknown;
-  inject?: (key: string, callback: () => unknown) => unknown;
+  /**
+   * 注册一格。
+   *
+   * **它是原型方法**：内部要靠 `this.ctx` 给自己的 effect 挂生命周期，
+   * 所以必须保持 `slots.register(...)` 属性调用形态 —— 取出来再调会丢 `this`。
+   */
+  register?(spec: Record<string, unknown>, component: unknown): unknown;
+  /** 等声明提交（或重建）后再跑回调；同样必须属性调用。 */
+  inject?(key: string, callback: () => unknown): unknown;
 }
 
 /**
@@ -142,8 +149,16 @@ interface SlotPlan {
  */
 function mountSlot(slots: SlotsLike, plan: SlotPlan): void {
   const register = (): (() => void) => {
-    const raw = slots.register as (spec: Record<string, unknown>, component: unknown) => unknown;
-    const off = raw(plan.spec, plan.component);
+    /*
+     * **必须写成 `slots.register(...)` 属性调用，不能先取出来再调**（2026-11-13 真机）。
+     *
+     * 宿主的 `slots.register` 是**原型方法**，内部要靠 `this.ctx` 挂 effect
+     * （`dsh-client-ui-slots` 的注释原话：「SlotRegistry.register must stay a prototype
+     * method for exactly that reason」）。写成 `const raw = slots.register; raw(...)`
+     * 会把 `this` 丢掉 —— 真机报的就是
+     * `TypeError: Cannot read properties of undefined (reading 'effect')`。
+     */
+    const off = slots.register?.(plan.spec, plan.component);
     const dispose = typeof off === "function" ? (off as () => void) : undefined;
     plan.remember(dispose);
     console.debug(`[dsh-token-tps-stats] ${plan.label}: registered into ${plan.name}`);
@@ -158,6 +173,7 @@ function mountSlot(slots: SlotsLike, plan: SlotPlan): void {
   };
   if (typeof slots.inject === "function") {
     // 声明在 → 立刻跑；声明没提交 → 等它提交后跑；声明重建 → 再跑一次。
+    // 同样保持属性调用：`slots.inject` 内部也要 `this.ctx`。
     slots.inject(plan.name, register);
     return;
   }

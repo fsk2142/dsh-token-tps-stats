@@ -35,7 +35,7 @@ interface Registered {
 }
 
 /** 造一个假宿主：`ctx.inject` 直接回调，`slots` 由测试安排。 */
-function makeContext(slots: unknown, log: Registered[], injectCalls: string[]): unknown {
+function makeContext(slots: unknown, _log: Registered[], injectCalls: string[]): unknown {
   return {
     inject(names: readonly string[], callback: (scoped: unknown) => unknown) {
       injectCalls.push(names.join(","));
@@ -48,6 +48,26 @@ describe("槽位注册：先注入声明，再注册", () => {
   beforeEach(() => {
     vi.spyOn(console, "debug").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  it("**`this` 不能丢**：直接用方法形式的假宿主（取出来再调会拿到 `undefined`）", () => {
+    // 真机那次 `TypeError: Cannot read properties of undefined (reading 'effect')`
+    // 就是「先把 register 取出来再调」丢了 `this`。这里用一个**依赖 this** 的对象，
+    // 一旦实现又写成解构/取引用，这条会立刻红。
+    const log: Registered[] = [];
+    const host = {
+      rows: log,
+      register(spec: Registered) {
+        if (this !== host) throw new TypeError("Cannot read properties of undefined (reading 'effect')");
+        this.rows.push(spec);
+      },
+      inject(this: { register: unknown }, _key: string, callback: () => unknown) {
+        if (this !== host) throw new TypeError("Cannot read properties of undefined (reading 'ctx')");
+        return callback();
+      },
+    };
+    installTpsPill(makeContext(host, log, []) as never);
+    expect(log.map((row) => row.id)).toEqual(["token-tps-stats", "token-tps-stats-chart"]);
   });
 
   it("**服务可用时只走 `slots.inject`，不直接 register**（这是那次回归的根因）", () => {

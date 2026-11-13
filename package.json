@@ -46,7 +46,8 @@
   "scripts": {
     "build": "tsdown",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:bundle": "node scripts/smoke-client.mjs"
   },
   "engines": {
     "node": ">=22.19.0",
