@@ -1,7 +1,7 @@
 /**
  * **数字格式化**（2026-11-12 从 `tps-pill.ts` 拆出来；2026-11-13 按用户要求改成整数）。
  *
- * 为什么单独一个文件：胶囊和折线图弹层都要显示 tok/s，而它们**互相不 import**
+ * 为什么单独一个文件：胶囊、折线图、每步列表都要显示数字，而它们**互相不 import**
  *（弹层挂在 `shell.overlay`、胶囊挂在 `conversation.composer.dock`）。共用一个
  * 格式化函数就不会出现「胶囊显示 4.2、弹层显示 4」这种各说各话的情况，
  * 也避免两个组件文件互相 import 形成环。
@@ -29,4 +29,31 @@
 export function formatRate(value: number): string {
   const clamped = Number.isFinite(value) ? Math.max(0, value) : 0;
   return String(Math.round(clamped));
+}
+
+/**
+ * 把 token 数量格式化成显示文本（**千分位**）。
+ *
+ * 每步列表里的 input/output 是**真实 usage 数字**（不是估算），可能上万；
+ * 逐位读「128493」很容易数错位数，加千分位读「128,493」就够了。
+ * @param value - token 数。
+ * @returns 显示文本；非法值显示 `—`。
+ */
+export function formatTokens(value: number | undefined): string {
+  if (value === undefined || !Number.isFinite(value)) return "—";
+  const rounded = Math.round(value);
+  return String(Math.round(rounded)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+/**
+ * 把比例格式化成百分比（**整数**）。
+ * @param numerator - 分子（例如命中的缓存 token）。
+ * @param denominator - 分母（例如输入总量）；非正数时返回 `"—"`。
+ * @returns 例如 `"97%"`。
+ */
+export function formatPercent(numerator: number | undefined, denominator: number | undefined): string {
+  if (denominator === undefined || !Number.isFinite(denominator) || denominator <= 0) return "—";
+  if (numerator === undefined || !Number.isFinite(numerator)) return "—";
+  const percent = Math.round((numerator / denominator) * 100);
+  return `${Math.min(100, Math.max(0, percent))}%`;
 }

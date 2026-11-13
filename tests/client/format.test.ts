@@ -1,42 +1,53 @@
 /**
- * **数字格式化**的单测（2026-11-13）。
- *
- * 钉住两条：
- * 1. **一律整数**（用户要求：「不要有小数了，实际上也不可能存在小数」）；
- * 2. 非有限值 / 负数一律当 0，不产出 `NaN` / `-3`。
+ * **数字格式化**的单测（2026-11-12，第 3 步；2026-11-13 加 token / 百分比）。
  */
 import { describe, expect, it } from "vitest";
 
-import { formatRate } from "../../src/client/format";
+import { formatPercent, formatRate, formatTokens } from "../../src/client/format";
 
-describe("整数口径", () => {
-  it("**没有小数点**：10 以上、10 以下都是整数", () => {
-    for (const value of [0, 0.4, 1.4, 4.2, 9.6, 10.5, 42.7, 148.2, 1_234.9]) {
-      expect(formatRate(value), `${value} 不该带小数`).not.toContain(".");
-    }
+describe("速度：一律整数", () => {
+  it("四舍五入到个位（读数本来就是估算，小数位是假的）", () => {
+    expect(formatRate(42.6)).toBe("43");
+    expect(formatRate(42.4)).toBe("42");
+    expect(formatRate(0)).toBe("0");
   });
 
-  it("按四舍五入变化（4.2 → 4，4.6 → 5）", () => {
-    expect(formatRate(4.2)).toBe("4");
-    expect(formatRate(4.6)).toBe("5");
-  });
-
-  it("0.4 显示 0（低于显示阈值的读数就是没有速度）", () => {
-    expect(formatRate(0.4)).toBe("0");
-  });
-
-  it("大数是整数、不加千分位（与官方胶囊同口径）", () => {
-    expect(formatRate(1_234.9)).toBe("1235");
+  it("非法值落到 0（不显示 NaN / Infinity）", () => {
+    expect(formatRate(Number.NaN)).toBe("0");
+    expect(formatRate(Number.POSITIVE_INFINITY)).toBe("0");
+    expect(formatRate(-5)).toBe("0");
   });
 });
 
-describe("兜底", () => {
-  it("负数当 0", () => {
-    expect(formatRate(-3)).toBe("0");
+describe("token 数：千分位", () => {
+  it("上万加千分位（「128,493」比「128493」好读）", () => {
+    expect(formatTokens(128_493)).toBe("128,493");
+    expect(formatTokens(1_234_567)).toBe("1,234,567");
   });
 
-  it("非有限值当 0（不产出 NaN）", () => {
-    expect(formatRate(Number.NaN)).toBe("0");
-    expect(formatRate(Number.POSITIVE_INFINITY)).toBe("0");
+  it("小数字不加分隔", () => {
+    expect(formatTokens(300)).toBe("300");
+    expect(formatTokens(0)).toBe("0");
+  });
+
+  it("拿不到时显示破折号（不拿 0 假装是账单）", () => {
+    expect(formatTokens(undefined)).toBe("—");
+    expect(formatTokens(Number.NaN)).toBe("—");
+  });
+});
+
+describe("缓存命中：整数百分比", () => {
+  it("正常比例", () => {
+    expect(formatPercent(900, 1_020)).toBe("88%");
+  });
+
+  it("分母为 0 / 缺值时是破折号", () => {
+    expect(formatPercent(10, 0)).toBe("—");
+    expect(formatPercent(10, undefined)).toBe("—");
+    expect(formatPercent(undefined, 100)).toBe("—");
+  });
+
+  it("被夹在 0~100 之间（脏数据不会显示成 300%）", () => {
+    expect(formatPercent(500, 100)).toBe("100%");
   });
 });

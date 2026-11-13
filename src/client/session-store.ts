@@ -127,7 +127,13 @@ export function pushSnapshot(entry: SessionStream, partial: unknown, at: number)
    * 间隔取**原始时间差**（不像折线那样摊开）：步统计量的是「有字在流的时长」，
    * 摊开的切片会把同一次交付拆成好多段短间隔，加起来反而失真。
    */
-  entry.steps.add(stream, tokensOf({ cjk, other }), at - previousAt, at);
+  entry.steps.add(
+    stream,
+    shape.turn as number,
+    shape.step as number,
+    tokensOf({ cjk, other }),
+    at - previousAt,
+  );
   // 这一拍的字符按「上一次采样 → 这一次采样」摊开，避免积压时读数冲顶。
   const slices = spreadCounts({ cjk, other }, previousAt, at);
   for (const slice of slices) {
@@ -135,6 +141,46 @@ export function pushSnapshot(entry: SessionStream, partial: unknown, at: number)
     entry.history.pushCounts(slice, slice.at);
   }
   return true;
+}
+
+/**
+ * 吃一拍**已经结束的**助手节点，把它们的真实 `usage` 记进步统计。
+ *
+ * 为什么单独一个入口：`legacy.nodes`（已完成的消息）与 `legacy.partial`（正在生成的
+ * 那一步）是两份数据。前者带 `usage`（真实 token 账单），后者只有累计文本。
+ * 列表里的「输入 / 输出 / 命中」只能来自前者 —— 估算值在那一列没有意义。
+ *
+ * 幂等：宿主每帧都给新的数组，但同一步的 `usage` 不会变，`settle` 只更新不多加行。
+ * @param entry - 认领到的状态。
+ * @param nodes - `legacy.nodes`。
+ */
+export function pushNodes(entry: SessionStream, nodes: unknown): void {
+  if (!Array.isArray(nodes)) return;
+  for (const node of nodes as readonly unknown[]) {
+    if (typeof node !== "object" || node === null) continue;
+    const record = node as { kind?: unknown; turn?: unknown; step?: unknown; usage?: unknown };
+    if (record.kind !== "assistant") continue;
+    if (typeof record.turn !== "number" || typeof record.step !== "number") continue;
+    const usage = record.usage as { [key: string]: unknown } | null | undefined;
+    if (typeof usage !== "object" || usage === null) continue;
+    entry.steps.settle(record.turn, record.step, {
+      inputTokens: countOf(usage.inputTokens),
+      outputTokens: countOf(usage.outputTokens),
+      cacheReadTokens: countOf(usage.cacheReadTokens),
+      cacheWriteTokens: countOf(usage.cacheWriteTokens),
+      reasoningTokens: countOf(usage.reasoningTokens),
+      totalTokens: countOf(usage.totalTokens),
+    });
+  }
+}
+
+/**
+ * 取一个非负整数（宿主的用量字段都是这种）；其它值当作「没有」。
+ * @param value - 原始值。
+ * @returns 非负整数或 `undefined`。
+ */
+function countOf(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
 /**

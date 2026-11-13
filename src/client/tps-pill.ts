@@ -71,7 +71,7 @@ import { createElement, useEffect, useState, type ReactElement } from "react";
 import { getChartState, setPillElement, subscribeChart, toggleChart, type ChartAnchor } from "./chart-store";
 import { formatRate } from "./format";
 import { pillAriaOf, pillLabelOf } from "./label";
-import { claimSessionStream, pushSnapshot, readingOf, releaseSessionStream, type SessionStream } from "./session-store";
+import { claimSessionStream, pushNodes, pushSnapshot, readingOf, releaseSessionStream, type SessionStream } from "./session-store";
 import { TYPO } from "./styles";
 
 export { formatRate };
@@ -211,6 +211,14 @@ export function TpsPill(props: TpsPillProps = {}): unknown {
    */
   const useChat = props.useChat as ((selector: (snapshot: unknown) => unknown) => unknown) | undefined;
   const partial = typeof useChat === "function" ? useChat((snapshot) => (snapshot as { legacy?: { partial?: unknown } })?.legacy?.partial) : undefined;
+  /*
+   * 已完成的助手节点：**每步的真实 token 用量在它们身上**（`nodes[i].usage`）。
+   *
+   * `legacy.partial` 只有正在生成的那一步、只有累计文本、没有 `usage`；
+   * 「每步」这一页要显示的输出/输入/命中只能来自这里。官方「本轮用量」弹窗读的
+   * 也是同一个字段。
+   */
+  const nodes = typeof useChat === "function" ? useChat((snapshot) => (snapshot as { legacy?: { nodes?: unknown } })?.legacy?.nodes) : undefined;
 
   /*
    * 诊断：拿不到 `useChat` 就只会恒显示 0，必须在控制台留一句 ——
@@ -253,6 +261,16 @@ export function TpsPill(props: TpsPillProps = {}): unknown {
     pushSnapshot(entry, partial, Date.now());
     setValue(readingOf(entry, Date.now()));
   }, [entry, partial]);
+
+  /*
+   * 每拍把**已完成的助手节点**过一遍，收下它们的真实用量。
+   *
+   * 只推进步统计、不碰速度计 —— 那一步早就结束了，把它的旧 token 记进实时读数
+   * 会凭空冒出一个峰。`pushNodes` 是幂等的（同一步只更新不新增行）。
+   */
+  useEffect(() => {
+    pushNodes(entry, nodes);
+  }, [entry, nodes]);
 
   /*
    * 指针回落需要**没有新数据时也继续重算**（每 100ms 一次）；归零就停表。

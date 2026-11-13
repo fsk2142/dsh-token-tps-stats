@@ -54,9 +54,9 @@ import {
   type ChartTab,
 } from "./chart-store";
 import type { DshEvent } from "./dom";
-import { formatRate } from "./format";
+import { formatPercent, formatRate, formatTokens } from "./format";
 import type { SessionStream } from "./session-store";
-import { TPS_STEP_RANGES, type StepSummary, type TpsStepRange } from "./step-history";
+import { TPS_STEP_RANGES, type StepRow, type TpsStepRange } from "./step-history";
 import { HAIRLINE, INK, INK_STRONG, SURFACE, TYPO } from "./styles";
 import { TPS_CHART_RANGES, type TpsChartRange, type TpsSeriesSummary } from "./tps-history";
 
@@ -83,6 +83,13 @@ const SVG_WIDTH = PANEL_WIDTH - 2 * PANEL_PADDING_X;
 
 /** 整个 SVG 的 viewBox 高（含底部横轴标签）。 */
 const SVG_HEIGHT = 118;
+
+/**
+ * 「每步」表格的列宽：步 / 输出 / 输入 / 命中 / 平均。
+ *
+ * 用固定像素而不是 `1fr`：数字列要等宽对齐，`1fr` 会把位数不同的行错开。
+ */
+const STEP_GRID = "34px 52px 58px 44px 66px";
 
 /** 弹层与胶囊之间的间距（像素）。 */
 const PANEL_GAP = 8;
@@ -278,7 +285,7 @@ function renderPanel(state: ChartState, anchor: ChartAnchor | undefined): ReactE
    */
   const stream = state.stream;
   const timeView = timeSeriesOf(stream, now, state.seconds);
-  const stepView = stepSeriesOf(stream, state.steps);
+  const rows = stream === undefined ? [] : stream.steps.rows(state.steps);
   const placement = panelPlacement(anchor);
   const seconds = state.seconds;
   const steps = state.steps;
@@ -291,7 +298,7 @@ function renderPanel(state: ChartState, anchor: ChartAnchor | undefined): ReactE
       "aria-label":
         state.tab === "time"
           ? `实时输出速度（TPS），最近 ${rangeLabel(seconds)}`
-          : `每步平均输出速度，最近 ${stepLabel(steps)}`,
+          : `每步输出统计，最近 ${stepLabel(steps)}`,
       style: {
         position: "fixed",
         left: `${placement.left}px`,
@@ -323,19 +330,7 @@ function renderPanel(state: ChartState, anchor: ChartAnchor | undefined): ReactE
           axisEnd: "现在",
           buttons: renderRangeButtons(seconds),
         })
-      : renderColumn({
-          title: `每步平均 · 最近 ${stepLabel(steps)}`,
-          subtitle:
-            stepView.count === 0
-              ? "还没有完成的步骤"
-              : `最新 ${formatRate(stepView.summary.latest)} tok/s · 平均 ${formatRate(stepView.summary.average)} · 峰值 ${formatRate(stepView.summary.peak)}`,
-          geometry: stepView.geometry,
-          scale: stepView.scale,
-          emptyText: stepView.count === 0 ? "这一步还没有输出" : undefined,
-          axisStart: `${stepLabel(steps)}前`,
-          axisEnd: "这一步",
-          buttons: renderStepButtons(steps),
-        }),
+      : renderStepTable(rows, steps),
   );
 }
 
@@ -344,15 +339,6 @@ interface TimeView {
   readonly geometry: ReturnType<typeof buildGeometry>;
   readonly scale: ReturnType<typeof axisScale>;
   readonly summary: TpsSeriesSummary;
-}
-
-/** 每步平均页的取数结果。 */
-interface StepView {
-  readonly geometry: ReturnType<typeof buildGeometry>;
-  readonly scale: ReturnType<typeof axisScale>;
-  readonly summary: StepSummary;
-  /** 有几步可画（`0` 时显示空态）。 */
-  readonly count: number;
 }
 
 /**
@@ -375,20 +361,124 @@ function timeSeriesOf(stream: SessionStream | undefined, now: number, seconds: T
 }
 
 /**
- * 取「每步平均」这一页的数据。
- * @param stream - 会话状态；`undefined` 时给空态。
- * @param steps - 看最近几步。
- * @returns 几何 + 量程 + 统计值。
+ * 渲染「每步」这一页：**一张表**，每行一步。
+ *
+ * 用户 2026-11-13 明确说这里不要折线：
+ *
+ * > 每步平均这里不用按照折线图显示，直接列出来第一步，输出多少，输入多少，
+ * > 命中多少，平均速率多少，这样子
+ *
+ * 列宽用固定像素（数字列右对齐 + 等宽数字），行与行才对齐得起来；
+ * 拿不到的字段显示 `—`，不拿估算值假装成账单。
+ * @param rows - 最近几步（**最新在前**）。
+ * @param steps - 当前档位（用于标题与空态）。
+ * @returns 元素。
  */
-function stepSeriesOf(stream: SessionStream | undefined, steps: TpsStepRange): StepView {
-  const points = stream === undefined ? [] : stream.steps.series(steps);
-  const summary: StepSummary = stream === undefined ? { average: 0, peak: 0, latest: 0 } : stream.steps.summary(steps);
-  const scale = axisScale(summary.peak);
-  const geometry = buildGeometry(
-    points.map((point) => point.speed),
-    { width: PLOT_WIDTH, height: PLOT_HEIGHT, max: scale.max },
+function renderStepTable(rows: readonly StepRow[], steps: TpsStepRange): ReactElement {
+  const header = createElement(
+    "div",
+    {
+      style: {
+        display: "grid",
+        gridTemplateColumns: STEP_GRID,
+        gap: "0 6px",
+        padding: "0 0 3px",
+        fontSize: "11px",
+        lineHeight: "16px",
+        color: INK,
+      },
+    },
+    createElement("span", null, "步"),
+    createElement("span", { style: { textAlign: "end" } }, "输出"),
+    createElement("span", { style: { textAlign: "end" } }, "输入"),
+    createElement("span", { style: { textAlign: "end" } }, "命中"),
+    createElement("span", { style: { textAlign: "end" } }, "平均"),
   );
-  return { geometry, scale, summary, count: points.length };
+
+  const body = rows.map((row, index) =>
+    createElement(
+      "div",
+      {
+        key: `${row.turn}:${row.step}:${index}`,
+        style: {
+          display: "grid",
+          gridTemplateColumns: STEP_GRID,
+          gap: "0 6px",
+          padding: "2px 0",
+          fontSize: "11px",
+          lineHeight: "16px",
+          color: INK,
+          // 进行中的那一步淡一档：数字还会长。
+          opacity: row.running ? 0.6 : 1,
+        },
+      },
+      createElement("span", { style: { whiteSpace: "nowrap" } }, `#${row.turn}.${row.step}`),
+      createElement("span", { style: { textAlign: "end", whiteSpace: "nowrap" } }, formatTokens(row.outputTokens)),
+      createElement("span", { style: { textAlign: "end", whiteSpace: "nowrap" } }, formatTokens(row.inputTokens)),
+      createElement(
+        "span",
+        { style: { textAlign: "end", whiteSpace: "nowrap" } },
+        row.cachedTokens === undefined || row.inputTokens === undefined
+          ? "—"
+          : formatPercent(row.cachedTokens, row.inputTokens),
+      ),
+      createElement(
+        "span",
+        { style: { textAlign: "end", whiteSpace: "nowrap" } },
+        row.speed === undefined ? "—" : `${formatRate(row.speed)} tok/s`,
+      ),
+    ),
+  );
+
+  return createElement(
+    "div",
+    { style: { display: "flex", flexDirection: "column", gap: "2px", width: "100%" } },
+    createElement(
+      "span",
+      {
+        style: {
+          fontSize: "12px",
+          lineHeight: "17px",
+          color: INK,
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        },
+      },
+      `每步输出 · 最近 ${stepLabel(steps)}`,
+    ),
+    createElement(
+      "span",
+      {
+        style: {
+          fontSize: "11px",
+          lineHeight: "16px",
+          color: INK,
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          marginBottom: "4px",
+        },
+      },
+      rows.length === 0 ? "还没有完成的步骤" : "输出/输入/命中是宿主的真实用量；平均速率按「有字在流」的时长算",
+    ),
+    header,
+    body.length === 0
+      ? createElement(
+          "div",
+          {
+            style: {
+              padding: "26px 0",
+              textAlign: "center",
+              fontSize: "11px",
+              color: INK,
+            },
+          },
+          "这一步还没有输出",
+        )
+      : createElement("div", { style: { display: "flex", flexDirection: "column" } }, ...body),
+    renderStepButtons(steps),
+  );
 }
 
 /**
