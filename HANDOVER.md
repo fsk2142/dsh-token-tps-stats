@@ -29,8 +29,8 @@
 | 远端 | `git@github.com:fsk2142/dsh-token-tps-stats.git` |
 | 版本 | `1.0.0` |
 | `tsc` | 干净 |
-| 单测 | **190 条全绿**（`tps-meter` 24 / `tps-history` 10 / `chart-geometry` 20 / `chart-store` 13 / `session-store` 30 / `step-history` 18 / `panel-metrics` 11 / `help` 7 / `label` 7 / `install` 9 / `pacing` 11 / `live-buffer` 5 / `format` 20 / `replay-regression` 2），另有 `pnpm test:bundle` 用带 `this` 语义的假宿主跑构建产物 |
-| 构建 | 成功（`lib/client.js` **24.0 KB**（minify 后）/ gzip 9.0 KB；`lib/index.js` 1.7 KB） |
+| 单测 | **172 条全绿**（`session-store` 34 / `step-history` 21 / `chart-geometry` 20 / `format` 18 / `chart-store` 15 / `tps-meter` 13 / `panel-metrics` 13 / `install` 10 / `help` 7 / `label` 7 / `live-tps` 6 / `live-fallback` 4 / `tps-history` 3 / `replay-regression` 1），另有 `pnpm test:bundle` 用带 `this` 语义的假宿主跑构建产物 |
+| 构建 | 成功（`lib/client.js` **25.0 KB**（minify 后）/ gzip 9.4 KB；`lib/index.js` 1.7 KB） |
 | 装进 profile | **已装**（`desktop` profile，`file:` 链接到本目录；宿主读的就是 `lib/client.js`） |
 | 真机槽位 | `conversation.composer.dock` → `token-tps-stats`（order -1）；`shell.overlay` → `token-tps-stats-chart` |
 
@@ -42,11 +42,9 @@
 | `src/client/label.ts` | **胶囊那行字**：固定前缀 + 定宽数字 + 单位，以及对应的无障碍文案（只有「输出文本的速度」一个语义） | 低（有单测） |
 | `src/client/step-history.ts` | **每步的一行账**（弹窗第二个页签）：按 `turn:step` 收真实 `usage` 与「有字在流」的时长；单次间隔封顶 2 秒、时长下限 500 毫秒，保留最近 40 步。时长拿不到时退回宿主节点的 `timing` | 低（有单测） |
 | `src/client/progress.ts` | **差分**：块文本提取（只认 text/reasoning）、`newTextSince`（无基线/换流/重试一律不产字符，幂等） | 低（有单测） |
-| `src/client/spread.ts` | **摊开**：把一拍的字符按两次采样的真实时间差分到秒片上（守恒、零头进最后一片） | 低（有单测） |
-| `src/client/pacing.ts` | **旧的时间轴重排**（按宿主时间戳差铺回）。**当前链路已不再调用**，只被 `live-buffer.ts` 与两个单测引用；留着是因为它是「积压 992 tok/s」那次事故的证据与备选方案 | 低（有单测） |
-| `src/client/live-buffer.ts` | **旧的帧缓冲**（攒一个宏任务再排空）。同样已不在链路里 | 低（有单测） |
-| `src/client/tps-meter.ts` | **计算核心**：字符→token 换算、1 秒×9 窗口、**3 秒低通**、指针衰减；有 `push(text)` 与 `pushCounts(counts)` 两个入口。纯函数 + 有状态累加器，**不碰 React、不碰宿主** | 低（有完整单测） |
-| `src/client/tps-history.ts` | **折线图历史**：每秒一个桶，只保留 5 分钟；每点 = 最近 9 秒滑动平均（与胶囊同口径） | 低（有单测） |
+| `src/client/tps-meter.ts` | **计算核心**：字符→token 换算、**两级各 650ms 级联指数滤波**（`push(tokens, at, receivedAt, from)`），读数不推进已提交状态。纯函数 + 有状态累加器，**不碰 React** | 低（有单测） |
+| `src/client/session-events.ts` | **借用宿主事件流**：`sessions.binding(id).eventSource` → 只消费 `append` 的 `assistant/live-chunk` 正文/思考增量，带宿主时间戳 | 中（依赖宿主私有 API，有回退） |
+| `src/client/tps-history.ts` | **折线图历史**：只保留 5 分钟；每秒保留一个峰值并用它的真实时刻，「平均」按时间加权（含空闲） | 低（有单测） |
 | `src/client/chart-geometry.ts` | **折线几何**：`axisScale`（阶梯 1/2/5/10/25/50/100/250…，108→150）、`axisTicks`（整数）、**保形平滑曲线**（单调三次 Hermite → 贝塞尔，不过冲） | 低（有单测） |
 | `src/client/chart-store.ts` | **弹层开关状态**：胶囊与弹层不共享 React 树，靠它交换「开没开 / 锚点 / 时长 / **看哪个会话**」；还存胶囊 DOM 元素供读当前矩形 | 低（有单测） |
 | `src/client/styles.ts` | **共享排版与表面**：官方胶囊那套字号/行高变量、弹层的白底 + elevation 阴影、文字与折线同色令牌 | 低 |
