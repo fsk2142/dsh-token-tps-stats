@@ -25,7 +25,7 @@
 | 远端 | `git@github.com:fsk2142/dsh-token-tps-stats.git` |
 | 版本 | `1.0.0` |
 | `tsc` | 干净 |
-| 单测 | **131 条全绿**（`tps-meter` 23 / `tps-history` 9 / `chart-geometry` 20 / `chart-store` 9 / `session-store` 20 / `label` 17 / `install` 8 / `pacing` 11 / `live-buffer` 5 / `format` 6 / `replay-regression` 2） |
+| 单测 | **132 条全绿**（`tps-meter` 23 / `tps-history` 9 / `chart-geometry` 20 / `chart-store` 9 / `session-store` 20 / `label` 17 / `install` 9 / `pacing` 11 / `live-buffer` 5 / `format` 6 / `replay-regression` 2），另有 `pnpm test:bundle` 用带 `this` 语义的假宿主跑构建产物 |
 | 构建 | 成功（`lib/client.js` **16.3 KB**（minify 后）/ gzip 6.5 KB；`lib/index.js` 1.7 KB） |
 | 装进 profile | **已装**（`desktop` profile，`file:` 链接到本目录；宿主读的就是 `lib/client.js`） |
 | 真机槽位 | `conversation.composer.dock` → `token-tps-stats`（order -1）；`shell.overlay` → `token-tps-stats-chart` |
@@ -119,6 +119,32 @@ Error: slot "shell.overlay" is not declared
 正确写法是 `slots.inject(key, () => slots.register(options, component))`：声明在
 就同步跑、还没提交就挂到提交之后、声明重建就再跑一次（先执行上一次的清理）。
 `register` 的返回值要**原样**交给它，声明消失时槽位条目才跟着消失。
+
+### 1c. `slots.register` / `slots.inject` 必须**属性调用**，不能取引用
+
+同一轮真机还报了这个：
+
+```
+Uncaught TypeError: Cannot read properties of undefined (reading 'effect')
+    at register (client.js:1815)
+```
+
+宿主的这两个方法都是**原型方法**，内部靠 `this.ctx` 给自己的 effect 挂生命周期
+（`dsh-client-ui-slots` 原话：「`SlotRegistry.register` must stay a prototype method
+for exactly that reason」）。所以：
+
+```ts
+// 错：this 丢了 → this.ctx 是 undefined → reading 'effect'
+const raw = slots.register;
+raw(options, component);
+
+// 对：保持属性调用
+slots.register?.(options, component);
+slots.inject?.("conversation.composer.dock", callback);
+```
+
+`pnpm test:bundle`（`scripts/smoke-client.mjs`）在 vm 里跑构建产物，用的就是
+**校验 `this`** 的假宿主 —— 一旦又写成取引用，这条会立刻红。
 
 ### 2. `events.register` 必须挂在对象上调用
 
