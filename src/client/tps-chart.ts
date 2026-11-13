@@ -55,7 +55,8 @@ import {
 } from "./chart-store";
 import type { DshEvent } from "./dom";
 import { formatRatio, formatRate, formatRateWithUnit, formatTokens } from "./format";
-import { CHART_SVG_HEIGHT, panelMinHeight } from "./panel-metrics";
+import { HELP_LABEL, HELP_SECTIONS } from "./help";
+import { HEADER_BUTTON_SIZE, CHART_SVG_HEIGHT, panelMinHeight } from "./panel-metrics";
 import type { SessionStream } from "./session-store";
 import { TPS_STEP_RANGES, type StepRow, type TpsStepRange } from "./step-history";
 import { HAIRLINE, INK, INK_STRONG, SURFACE, TYPO } from "./styles";
@@ -226,6 +227,8 @@ export function TpsChart(): unknown {
   const [state, setState] = useState(() => getChartState());
   /** 每次重画的触发器；读数据时再取最新的 `Date.now()`。 */
   const [, setTick] = useState(0);
+  /** 口径说明是否展开（**组件本地状态**，不进 `chart-store`）。 */
+  const [helpOpen, setHelpOpen] = useState(false);
 
   useEffect(() => subscribeChart(() => setState(getChartState())), []);
 
@@ -275,7 +278,7 @@ export function TpsChart(): unknown {
    * 位置每次重画都重新读：优先用仓库里登记的**胶囊当前矩形**（弹层开着时用户
    * 滚动页面或拖窗口，胶囊会动）；仓库里没有元素才退回打开时存下的那份快照。
    */
-  return renderPanel(state, readPillRect() ?? state.anchor);
+  return renderPanel(state, readPillRect() ?? state.anchor, { helpOpen, toggleHelp: () => setHelpOpen((open) => !open) });
 }
 
 /**
@@ -287,11 +290,23 @@ export function TpsChart(): unknown {
  * 左上角选一个，整张图跟着换。这样每张图能独占整个宽度，曲线也看得清。
  *
  * 两个页签各自记得自己的档位（60/180/300 秒、5/10/20 步），切换页签不会重置。
+ *
+ * 口径说明（2026-11-13 用户第三版要求）：
+ *
+ * > 这个地方不需要这么长的说明吧，可以在右上角的 X 旁边放一个可以点击的
+ * > ？来进行解释说明
+ *
+ * 所以长说明搬进 `?` 的展开面板，常驻只留一句短提示（见 `help.ts`）。
  * @param state - 弹层状态（页签 / 时长 / 步数 / 看哪个会话）。
  * @param anchor - 胶囊矩形。
+ * @param help - 说明面板的开关与切换函数。
  * @returns 元素。
  */
-function renderPanel(state: ChartState, anchor: ChartAnchor | undefined): ReactElement {
+function renderPanel(
+  state: ChartState,
+  anchor: ChartAnchor | undefined,
+  help: { helpOpen: boolean; toggleHelp: () => void },
+): ReactElement {
   const now = Date.now();
   /*
    * **没有会话就没有曲线**。
@@ -307,6 +322,11 @@ function renderPanel(state: ChartState, anchor: ChartAnchor | undefined): ReactE
   const placement = panelPlacement(anchor);
   const seconds = state.seconds;
   const steps = state.steps;
+  /*
+   * 说明展开时面板会变高，但可能已经贴着视口顶部（`translateY(-100%)` 往上长）。
+   * 展开面板因此**画在内容流里**（把两页往下推），而不是浮在上面盖住图表 ——
+   * 盖住会让「读说明时想看表格」变得不可能，而这是用户自己点开要看的。
+   */
 
   return createElement(
     "div",
@@ -345,7 +365,8 @@ function renderPanel(state: ChartState, anchor: ChartAnchor | undefined): ReactE
         zIndex: 1,
       },
     },
-    renderHeader(state.tab),
+    renderHeader(state.tab, help),
+    help.helpOpen ? renderHelp() : null,
     state.tab === "time"
       ? renderColumn({
           title: `实时速度 · 最近 ${rangeLabel(seconds)}`,
@@ -420,7 +441,10 @@ function timeSeriesOf(stream: SessionStream | undefined, now: number, seconds: T
  * > 应该先是缓存读取、未缓存输入、输出、缓存命中、平均速度，
  * > 但是都用简写：读取 / 输入 / 输出 / 命中 / 速度。
  *
- * 所以列是：步 · 读取 · 输入 · 输出 · 命中 · 速度。
+ * 表格上方那一长行说明已经搬进 `?`（用户：单靠一行说明太长），**常驻一行都不留**
+ * （用户随后又明确「这句话不用加」）—— 标题下面直接就是表头，更紧凑。
+ *
+ * 列是：步 · 读取 · 输入 · 输出 · 命中 · 速度。
  * 「读取」= `cacheReadTokens`，「输入」= `inputTokens`（**未缓存**那部分，
  * 不是 `total − output` —— 那会把缓存算进来）；「命中」= 读取 ÷（读取 + 输入 + 写入）。
  *
@@ -503,23 +527,6 @@ function renderStepTable(rows: readonly StepRow[], steps: TpsStepRange): ReactEl
       },
       `每步输出 · 最近 ${stepLabel(steps)}`,
     ),
-    createElement(
-      "span",
-      {
-        style: {
-          fontSize: "11px",
-          lineHeight: "16px",
-          color: INK,
-          whiteSpace: "nowrap",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          marginBottom: "4px",
-        },
-      },
-      rows.length === 0
-        ? "还没有完成的步骤"
-        : "读取/输入/输出是宿主的真实用量；命中 = 读取 ÷ 提示总量；速度按「在生成」的时长算",
-    ),
     header,
     body.length === 0
       ? createElement(
@@ -540,14 +547,84 @@ function renderStepTable(rows: readonly StepRow[], steps: TpsStepRange): ReactEl
 }
 
 /**
- * 头部：**左上角两个页签** + 右侧关闭按钮。
+ * 口径说明面板（`?` 点开时显示）。
+ *
+ * 画在**内容流里**而不是浮在图表上：用户点开就是想读它，盖住表格会让「一边读
+ * 说明一边看数字」变得不可能。展开时面板变高 —— 位置用 `translateY(-100%)`
+ * 从胶囊往上长，所以高度增加是向上扩张，不会把面板推到视口外（顶多贴顶，
+ * 而积木式的 `?` 按钮本身仍在可视区）。
+ * @returns 元素。
+ */
+function renderHelp(): ReactElement {
+  return createElement(
+    "div",
+    { style: { display: "flex", flexDirection: "column", gap: "6px", marginBottom: "8px" } },
+    ...HELP_SECTIONS.map((section, index) =>
+      createElement(
+        "div",
+        { key: `help-${index}`, style: { display: "flex", flexDirection: "column", gap: "1px" } },
+        createElement(
+          "span",
+          { style: { fontSize: "11px", lineHeight: "16px", color: INK_STRONG, fontWeight: 600 } },
+          section.title,
+        ),
+        ...section.lines.map((line, lineIndex) =>
+          createElement(
+            "span",
+            { key: `help-${index}-${lineIndex}`, style: { fontSize: "11px", lineHeight: "16px", color: INK } },
+            `· ${line}`,
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+/**
+ * 头部右侧那个**方形图标按钮**的样式（`?` 与 `×` 共用）。
+ *
+ * 用户 2026-11-13 的原话是「右上角的 X 和 ? 加一个小方框吧，就像和每步平均那个
+ * 样子」—— 也就是要和左侧页签按钮、下方档位按钮同一套观感：1px 描边 + 6px 圆角
+ * + 22px 高。所以这里**直接复用** {@link rangeButtonStyle} 的边框与圆角，只把
+ * 内边距换成「固定正方形 + 内容居中」。
+ *
+ * 之前它俩是无边框的裸文字：和页签放在一起时，左边三个是按钮、右边两个像文字，
+ * 视觉上分成两拨 —— 加方框之后整条头部读起来是一组控件。
+ * @param active - 这个按钮是不是处于「打开 / 激活」状态（`?` 展开时是）。
+ * @returns 内联样式。
+ */
+function iconButtonStyle(active: boolean): Record<string, string | number> {
+  return {
+    ...rangeButtonStyle(active),
+    // 固定正方形：两个按钮同宽同高，`?` 和 `×` 的视觉重量才一致。
+    width: `${HEADER_BUTTON_SIZE}px`,
+    height: `${HEADER_BUTTON_SIZE}px`,
+    padding: 0,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    // 行高与高度一致，字才真正居中。
+    lineHeight: `${HEADER_BUTTON_SIZE - 2}px`,
+  };
+}
+
+/**
+ * 头部：**左上角两个页签** + 右侧 `?` 与关闭按钮。
  *
  * 页签沿用宿主分段控件的观感：未选中是透明底 + 发丝边框，选中是略深一档的描边
  * （与下方档位按钮同一套 `rangeButtonStyle`），所以「选中的是哪个」一眼看得出。
+ *
+ * `?` 是 2026-11-13 用户要求的：
+ *
+ * > 可以在右上角的 X 旁边放一个可以点击的？来进行解释说明
+ *
+ * 随后又要求「X 和 ? 加一个小方框，就像每步平均那个样子」—— 所以两者都走
+ * {@link iconButtonStyle}，与页签同一套边框，整条头部是一组控件。
  * @param tab - 当前页签。
+ * @param help - 说明面板的开关与切换函数。
  * @returns 元素。
  */
-function renderHeader(tab: ChartTab): ReactElement {
+function renderHeader(tab: ChartTab, help: { helpOpen: boolean; toggleHelp: () => void }): ReactElement {
   return createElement(
     "div",
     { style: { display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px" } },
@@ -558,24 +635,30 @@ function renderHeader(tab: ChartTab): ReactElement {
       renderTabButton("steps", "每步平均", tab),
     ),
     createElement(
-      "button",
-      {
-        type: "button",
-        "aria-label": "关闭折线图",
-        onClick: () => closeChart(),
-        style: {
-          flex: "none",
-          border: "none",
-          background: "transparent",
-          color: INK,
-          fontFamily: "inherit",
-          fontSize: "15px",
-          lineHeight: "18px",
-          padding: "0 2px",
-          cursor: "pointer",
+      "div",
+      { style: { display: "flex", alignItems: "center", gap: "6px", flex: "none" } },
+      createElement(
+        "button",
+        {
+          type: "button",
+          "aria-label": HELP_LABEL,
+          "aria-pressed": help.helpOpen,
+          title: HELP_LABEL,
+          onClick: () => help.toggleHelp(),
+          style: iconButtonStyle(help.helpOpen),
         },
-      },
-      "×",
+        "?",
+      ),
+      createElement(
+        "button",
+        {
+          type: "button",
+          "aria-label": "关闭折线图",
+          onClick: () => closeChart(),
+          style: iconButtonStyle(false),
+        },
+        "×",
+      ),
     ),
   );
 }

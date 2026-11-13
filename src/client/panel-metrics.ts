@@ -39,8 +39,12 @@ export const TITLE_HEIGHT = 17;
 /** 副标题行高（11px 字 + `lineHeight: 16px`）。 */
 export const SUBTITLE_HEIGHT = 16;
 
-/** 步数页副标题下方额外留白（`marginBottom: 4px`；时间页没有）。 */
+/** 步数页副标题下方额外留白（`marginBottom: 4px`）。**当前未使用** —— 那句提示
+ * 已被 2026-11-13 删除，常量留着是为了「将来若加回一行说明」时有据可依。 */
 export const SUBTITLE_MARGIN_BOTTOM = 4;
+
+/** 头部按钮（`?` 与 `×`）的方形边长：与页签按钮同高，看起来是一组分段控件。 */
+export const HEADER_BUTTON_SIZE = 22;
 
 /** 「每步」表头外高（`lineHeight: 16px` + `padding: 0 0 3px`）。 */
 export const STEP_HEADER_HEIGHT = 19;
@@ -76,8 +80,9 @@ export const PANEL_REFERENCE_STEPS = TPS_STEP_DEFAULT;
 /**
  * 折线图 SVG 的 viewBox 高（含底部横轴标签）。
  *
- * **125 是算出来的，不是随手取的**：它让 {@link timeBodyHeight} 恰好等于
- * {@link stepsBodyHeight}(5) = 190px。改这个数之前先跑那条对齐单测。
+ * **125 是算出来的，不是随手取的**：它让 {@link timeBodyHeight} 与
+ * {@link stepsBodyHeight}(5) 相近（差 22px，由 `panelContentHeight` 统一）。
+ * 改这个数之前先跑那条对齐单测。
  */
 export const CHART_SVG_HEIGHT = 125;
 
@@ -101,6 +106,9 @@ export function timeBodyHeight(svgHeight: number = CHART_SVG_HEIGHT): number {
 
 /**
  * 步数页的内容高度（不含弹层内边距与头部）。
+ *
+ * 2026-11-13 用户说「宿主的真实用量 · 口径见右上角 ?」这句**不用加**，那句提示
+ * 被删掉了 —— 所以这里比上一版少一行（副标题 16 + 留白 4 + gap 2 = 22px 矮了）。
  * @param rows - 表格行数（等于当前档位的步数）。
  * @returns 像素。
  */
@@ -108,9 +116,6 @@ export function stepsBodyHeight(rows: number): number {
   const bodyRows = Math.max(0, Math.floor(rows));
   return (
     TITLE_HEIGHT +
-    COLUMN_GAP +
-    SUBTITLE_HEIGHT +
-    SUBTITLE_MARGIN_BOTTOM +
     COLUMN_GAP +
     STEP_HEADER_HEIGHT +
     COLUMN_GAP +
@@ -122,10 +127,30 @@ export function stepsBodyHeight(rows: number): number {
 }
 
 /**
+ * **面板内容区的高度**：两页取较高那个。
+ *
+ * 删掉那句提示之后，5 步的步数页比时间页矮 22px。要「方框大小一致」，只有两条路：
+ *
+ * 1. 把折线图压矮 22px —— 绘图区从 99px 掉到 77px，纵轴能分辨的档位变少；
+ * 2. **以高者为基准**，矮的那页留一点底部空白。
+ *
+ * 选了 2：折线图的分辨率别为了对齐去牺牲。两侧的差是 22px，落在按钮行下方的
+ * 内边距里，看上去就是底部留白。
+ * @param rows - 步数页的行数；传 `undefined` 表示按时间页算。
+ * @returns 像素。
+ */
+export function panelContentHeight(rows?: number): number {
+  const steps = rows === undefined ? 0 : stepsBodyHeight(rows);
+  return Math.max(timeBodyHeight(), steps);
+}
+
+/**
  * 弹层的最小高度（含内边距与头部）。
  *
- * 挂在面板的 `minHeight` 上：步数页**还没有行**（空态）时不会缩水，
- * 「刚打开、一步都没跑完」那种情况也守得住「两页一样高」。
+ * **以两页里较高的那一页为准**（删掉那句提示之后是**时间页**更高）：挂在面板的
+ * `minHeight` 上，矮的那一页就自动被撑到同一高度 —— 用户要的「方框大小一致」
+ * 就是这样落实的，而不是靠两页各自的算式恰好相等（那种巧合一改行高就散）。
+ * 顺带兜住空态：黑没有行时面板也不会缩。
  * @returns 像素。
  */
 export function panelMinHeight(): number {
@@ -133,7 +158,7 @@ export function panelMinHeight(): number {
     PANEL_PADDING_TOP +
     HEADER_HEIGHT +
     HEADER_MARGIN_BOTTOM +
-    stepsBodyHeight(PANEL_REFERENCE_STEPS) +
+    panelContentHeight(PANEL_REFERENCE_STEPS) +
     PANEL_PADDING_BOTTOM
   );
 }
