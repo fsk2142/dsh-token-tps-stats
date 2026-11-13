@@ -94,40 +94,6 @@ export function textOfBlocks(blocks: unknown): (string | undefined)[] {
 }
 
 /**
- * 这一拍里是否有**正在流式的工具调用**。
- *
- * ## 为什么要它（2026-11-13 用户要求「工具调用时不要显示 0」）
- *
- * 本会话实测：725 条助手回复里 **374 条（52%）只有工具调用、没有可见文字**。
- * 那段时间模型在吐 token（工具参数），但 `blocks` 里只有 `tool-call` 块，
- * 我们的差分拿不到任何「字」—— 读数因此是 0，看着像插件停了。
- *
- * ## 判据为什么是「有 tool-call 块但参数还是空的」
- *
- * 宿主的行为（`dsh-client-ui-chat` 的 `updateChunk`）：
- * - `block-start(blockType: "tool-call")` → 建一个 `tool-call` 块，`argsRaw` 为 **`""`**；
- * - 之后的 `tool-call-delta` 只更新 id/name，**`argsRaw` 仍然是 `""`**；
- * - 直到 `block-end` 才把完整参数写进 `argsRaw`。
- *
- * 也就是说：**参数为空 = 还在生成**（或者刚建块、一个参数都还没到）；
- * 参数非空 = 这一块已经落地。所以「有 tool-call 块且 argsRaw 为空」正是
- * 「正在调用工具、还没有可见文字」的那个阶段。
- * @param blocks - `legacy.partial.blocks`。
- * @returns 是否处在工具调用阶段。
- */
-export function toolCallInFlight(blocks: unknown): boolean {
-  if (!Array.isArray(blocks)) return false;
-  for (const block of blocks as readonly unknown[]) {
-    if (typeof block !== "object" || block === null) continue;
-    if ((block as { kind?: unknown }).kind !== "tool-call") continue;
-    const args = (block as { argsRaw?: unknown }).argsRaw;
-    // 参数还没填 → 还在流式；`undefined`（没有该字段）也当作还在流式。
-    if (typeof args !== "string" || args === "") return true;
-  }
-  return false;
-}
-
-/**
  * 算出这一拍新增的文本。
  *
  * ## 三条规则（都是踩坑后才定的）

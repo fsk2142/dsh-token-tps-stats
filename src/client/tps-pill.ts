@@ -70,8 +70,8 @@ import { createElement, useEffect, useState, type ReactElement } from "react";
 
 import { getChartState, setPillElement, subscribeChart, toggleChart, type ChartAnchor } from "./chart-store";
 import { formatRate } from "./format";
-import { pillAriaOf, pillLabelOf, type PillMode } from "./label";
-import { claimSessionStream, modeOf, pushSnapshot, readingOf, releaseSessionStream, type SessionStream } from "./session-store";
+import { pillAriaOf, pillLabelOf } from "./label";
+import { claimSessionStream, pushSnapshot, readingOf, releaseSessionStream, type SessionStream } from "./session-store";
 import { TYPO } from "./styles";
 
 export { formatRate };
@@ -224,10 +224,9 @@ export function TpsPill(props: TpsPillProps = {}): unknown {
   }, [useChat]);
 
   const [value, setValue] = useState<number>(() => readingOf(entry, Date.now()));
-  const [mode, setMode] = useState<PillMode>(() => modeOf(entry, readingOf(entry, Date.now())));
   const [expanded, setExpanded] = useState<boolean>(() => getChartState().open);
-  /** 这次渲染要显示的三段文本（数字或「工具调用中」，见 `label.ts`）。 */
-  const label = pillLabelOf(mode, value, formatRate);
+  /** 这次渲染要显示的三段文本（固定前缀 + 定宽数字 + 单位，见 `label.ts`）。 */
+  const label = pillLabelOf(value, formatRate);
 
   /*
    * 会话换了（理论上宿主会给新 key，但这里仍兜一层）：换到新的那份状态，并把旧的还回去。
@@ -246,25 +245,13 @@ export function TpsPill(props: TpsPillProps = {}): unknown {
    * 差分本身是幂等的 —— 同一份 `partial` 重复推一次，`newTextSince` 看到「文本没变长」
    * 就什么都不产出。
    *
-   * **即使这一拍没有新字也要刷新**：`pushSnapshot` 顺手记下「是不是在调工具」，
-   * 并且把读数推进一拍（指针回落靠它）。所以这里不看 `pushSnapshot` 的返回值。
-   */
-  /*
-   * 每一拍快照 → 差分 + 摊开 → 速度计与历史。
-   *
-   * 放在 effect 里而不是渲染中：渲染必须无副作用（StrictMode 下渲染会跑两次）。
-   * 差分本身是幂等的 —— 同一份 `partial` 重复推一次，`newTextSince` 看到「文本没变长」
-   * 就什么都不产出。
-   *
-   * **`partial` 为空时也要推**（不要在这里 `return`）：这一步结束（`legacy.partial`
-   * 变 null）时，`pushSnapshot` 顺手把「正在调工具」的标志清掉。漏了这一步，
-   * 工具调用结束后胶囊会一直显示「工具调用中」直到刷新页面。
+   * **`partial` 为空时也要推**（不要在这里 `return`）：这一步结束时 `pushSnapshot`
+   * 要把基线清掉（`sampledAt` 也推进），否则下一次同样的 turn/step 重试会被旧基线
+   * 把整段累计文本算成「新到的字」。
    */
   useEffect(() => {
     pushSnapshot(entry, partial, Date.now());
-    const next = readingOf(entry, Date.now());
-    setValue(next);
-    setMode(modeOf(entry, next));
+    setValue(readingOf(entry, Date.now()));
   }, [entry, partial]);
 
   /*
@@ -278,9 +265,7 @@ export function TpsPill(props: TpsPillProps = {}): unknown {
   useEffect(() => {
     if (!active) return;
     const timer = setInterval(() => {
-      const next = readingOf(entry, Date.now());
-      setValue(next);
-      setMode(modeOf(entry, next));
+      setValue(readingOf(entry, Date.now()));
     }, TICK_MS);
     return () => clearInterval(timer);
   }, [entry, active]);
@@ -320,7 +305,7 @@ export function TpsPill(props: TpsPillProps = {}): unknown {
         title: expanded ? "点击收起 TPS 变化曲线" : "点击查看 TPS 变化曲线",
         "aria-expanded": expanded,
         "aria-haspopup": "dialog",
-        "aria-label": pillAriaOf(mode, value, formatRate, expanded),
+        "aria-label": pillAriaOf(value, formatRate, expanded),
         onClick: (event: { currentTarget: unknown }) => toggleChart(anchorOf(event), entry),
       },
       GaugeIcon(),
@@ -333,21 +318,19 @@ export function TpsPill(props: TpsPillProps = {}): unknown {
        * 官方那两个胶囊排在我们右边，我们一变宽它们就跟着被推来推去；所以数字占
        * 固定 `4ch`（等宽数字下容得下「1000」）并**右对齐**，外框纹丝不动。
        *
-       * 「工具调用中」状态（2026-11-13 用户要求「工具调用时不要显示 0」）**复用同一块**
-       * 位置：拿掉数字与单位、直接把状态词放在那里 —— 宽度与「4ch + ` tok/s`」几乎
-       * 相等，阶段切换时胶囊不会明显伸缩（见 `label.ts`）。
+       * 工具调用阶段同样显示 `0 tok/s`（2026-11-13 用户改口：「工具调用的时候还是
+       * 不要显示文字，还是显示 0 tok/s 吧」）—— 那一格只有「输出文本的速度」一个语义，
+       * 插状态词会让它变含糊（见 `label.ts`）。
        */
       createElement(
         "span",
         { style: { minWidth: "0", overflow: "hidden", textOverflow: "ellipsis" } },
         label.prefix,
-        label.number === undefined
-          ? null
-          : createElement(
-              "span",
-              { style: { display: "inline-block", minWidth: "4ch", textAlign: "end" } },
-              label.number,
-            ),
+        createElement(
+          "span",
+          { style: { display: "inline-block", minWidth: "4ch", textAlign: "end" } },
+          label.number,
+        ),
         label.suffix,
       ),
     ),

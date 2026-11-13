@@ -1,51 +1,36 @@
 /**
  * **胶囊上那行字怎么拼**（2026-11-13）。
  *
- * ## 为什么需要它
+ * ## 为什么单独一个模块
  *
- * 用户问「现在这个速度是纯输出的速度吗？」，并要求：**口径保持不变（正文 + 思考），
- * 但模型只在调工具、没有可见文字时不要再显示 0**。
+ * 那行字有两个容易写歪的地方，都值得钉在纯函数上：
  *
- * 本会话实测：725 条助手回复里 **374 条（52%）** 只有工具调用、没有可见文字。
- * 那段时间模型确实在流式吐 token（工具参数），读数却一直是 0 ——「明明在干活，
- * 仪表像停了」最容易让人以为插件坏了。
+ * 1. **固定宽度**（用户要求「别把所有胶囊推来推去」）：数字那一段必须占固定的
+ *    `4ch`、右对齐，速度在 47→48→49 之间跳时外框纹丝不动；
+ * 2. **无障碍文案**：读屏读到的是句子，不是把几段 DOM 文本原样念一遍。
  *
- * ## 为什么不把工具参数算进读数
+ * ## 为什么**没有**「工具调用中」这个状态了（2026-11-13 用户改口）
  *
- * 算不进去：客户端快照里 `tool-call` 块的 `argsRaw` 在**流式中途始终是空串**，
- * 宿主只在 `block-end` 才把完整参数填进去（见 `dsh-client-ui-chat` 的 `updateChunk`）。
- * 拿不到增量就没有速率可言。
+ * 中途加过一版：只调工具、没有可见文字时显示 `工具调用中`，理由是「明明在干活，
+ * 仪表像停了」（本会话 725 条回复里 374 条属于这种）。用户实际看过之后决定
+ * **不要状态词**，回到 `0 tok/s`：
  *
- * 而且把工具参数混进 tok/s 会让数字**不再是「输出文本的速度」**：一次读大文件能把
- * 读数顶到几百，那不是用户想看的模型吐字快慢。
+ * > 工具调用的时候还是不要显示文字，还是显示 0 tok/s 吧
  *
- * ## 三种状态与宽度
- *
- * | 状态 | 文本 | 宽度 |
- * | --- | --- | --- |
- * | 有速度 | `实时输出速度（TPS）：42 tok/s` | 宽 |
- * | 只调工具 | `实时输出速度（TPS）：工具调用中` | 与上面**基本相等** |
- * | 空闲 | `实时输出速度（TPS）：0 tok/s` | 宽 |
- *
- * 数字那一段占**固定 `4ch`**（用户要求「固定宽度，别把所有胶囊推来推去」），
- * 所以速度状态内部的宽度恒等；工具状态去掉了数字位与单位、直接接一个 5 字的状态词，
- * 与「4ch 数字 + ` tok/s`」几乎同宽 —— 阶段切换时胶囊不会明显伸缩。
+ * 这个取舍是对的 —— 那一格只有一个语义（输出文本的速度），插一句状态说明会让
+ * 「这是速度吗」变得含糊。工具参数本来也不算进 tok/s（`argsRaw` 在流式中途
+ * 始终是空串，拿不到增量），显示 0 与口径一致。
  *
  * @module dsh-token-tps-stats/src/client/label
  */
 
-/** 胶囊当前该显示哪一类文本。 */
-export type PillMode = "rate" | "tool" | "idle";
-
 /** 胶囊文本的形状。 */
 export interface PillLabel {
-  /** 模式（决定颜色的深浅与无障碍文案）。 */
-  readonly mode: PillMode;
   /** 固定前缀。 */
   readonly prefix: string;
-  /** 定宽数字（只有 `rate` / `idle` 有）；`tool` 状态没有数字位。 */
-  readonly number: string | undefined;
-  /** 定宽数字之后的文字（单位，或状态词）。 */
+  /** 定宽数字（`4ch`、右对齐）。 */
+  readonly number: string;
+  /** 数字之后的单位。 */
   readonly suffix: string;
 }
 
@@ -55,42 +40,26 @@ const PREFIX = "实时输出速度（TPS）：";
 /** 速度单位。 */
 const UNIT = " tok/s";
 
-/** 「只调工具」时接在前缀后面的状态词（用它取代数字位与单位，宽度才不变）。 */
-const TOOL_TEXT = "工具调用中";
-
 /**
  * 决定胶囊显示什么。
- * @param mode - 这一拍的状态。
- * @param rate - 当前读数（tok/s）。
+ * @param rate - 当前读数（tok/s）；非有限值或 ≤0 一律显示 `0`。
  * @param format - 数字格式化（注入 `formatRate`，单测不必依赖它）。
  * @returns 文本形状。
  */
-export function pillLabelOf(mode: PillMode, rate: number, format: (value: number) => string): PillLabel {
-  if (mode === "tool") return { mode, prefix: PREFIX, number: undefined, suffix: TOOL_TEXT };
-  const shown = mode === "idle" ? 0 : rate;
-  if (shown <= 0) return { mode: "idle", prefix: PREFIX, number: format(0), suffix: UNIT };
-  return { mode: "rate", prefix: PREFIX, number: format(shown), suffix: UNIT };
+export function pillLabelOf(rate: number, format: (value: number) => string): PillLabel {
+  const shown = Number.isFinite(rate) && rate > 0 ? rate : 0;
+  return { prefix: PREFIX, number: format(shown), suffix: UNIT };
 }
 
 /**
  * 胶囊的无障碍文案（读屏用）。
- *
- * 不复用 {@link pillLabelOf} 的拼接：把「工具调用中」读成一句话，别读成
- * 「实时输出速度（TPS）：工具调用中」那种半截子。
- * @param mode - 模式。
  * @param rate - 读数（tok/s）。
  * @param format - 数字格式化。
  * @param expanded - 弹层是否已展开。
  * @returns 读屏文案。
  */
-export function pillAriaOf(
-  mode: PillMode,
-  rate: number,
-  format: (value: number) => string,
-  expanded: boolean,
-): string {
+export function pillAriaOf(rate: number, format: (value: number) => string, expanded: boolean): string {
+  const shown = Number.isFinite(rate) && rate > 0 ? rate : 0;
   const tail = expanded ? "点击收起变化曲线" : "点击查看变化曲线";
-  if (mode === "tool") return `模型正在调用工具（当前没有可见文字输出），${tail}`;
-  const shown = mode === "idle" ? 0 : Math.max(0, Number.isFinite(rate) ? rate : 0);
   return `实时输出速度（TPS）：${format(shown)} tok/s，${tail}`;
 }
