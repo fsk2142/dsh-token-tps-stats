@@ -42,16 +42,16 @@ const SMOOTH_WINDOWS = TPS_WINDOWS;
 /**
  * 保留多久的历史（秒）。
  *
- * 180 秒 = 3 分钟：足够看出「这一轮输出前快后慢」的形状，内存也恒定
- *（180 个小数对，不到 10KB）。
+ * 300 秒 = 5 分钟：用户后来要「1 分钟 / 3 分钟 / 5 分钟」三档，所以保留期跟着拉到
+ * 最长那一档。内存仍是 300 个小数对，不到 20KB。
  */
-export const TPS_HISTORY_SECONDS = 180;
+export const TPS_HISTORY_SECONDS = 300;
 
 /** 折线图默认展示的时长（秒）。 */
 export const TPS_CHART_DEFAULT_SECONDS = 60;
 
 /** 折线图可选的时长（秒）：上限受 {@link TPS_HISTORY_SECONDS} 限制。 */
-export const TPS_CHART_RANGES = [60, 180] as const;
+export const TPS_CHART_RANGES = [60, 180, 300] as const;
 
 /** 可选时长的类型。 */
 export type TpsChartRange = (typeof TPS_CHART_RANGES)[number];

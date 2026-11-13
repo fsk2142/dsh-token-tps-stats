@@ -20,6 +20,7 @@
  */
 
 import type { SessionStream } from "./session-store";
+import { TPS_STEP_DEFAULT, type TpsStepRange } from "./step-history";
 import { TPS_CHART_DEFAULT_SECONDS, type TpsChartRange } from "./tps-history";
 
 /** 锚点：胶囊那一刻的屏幕矩形（只留摆弹层要用的四个边）。 */
@@ -30,20 +31,37 @@ export interface ChartAnchor {
   readonly bottom: number;
 }
 
+/** 弹层当前在看哪一块（左上角的两个标签页）。 */
+export type ChartTab = "time" | "steps";
+
+/** 默认标签页：实时速度。 */
+export const CHART_DEFAULT_TAB: ChartTab = "time";
+
 /** 弹层状态。 */
 export interface ChartState {
   /** 是否打开。 */
   readonly open: boolean;
   /** 打开时胶囊的位置；没有时弹层贴左下角（理论上不会发生）。 */
   readonly anchor: ChartAnchor | undefined;
+  /** 左上角选中的是哪个标签页。 */
+  readonly tab: ChartTab;
   /** 展示时长（秒）。 */
   readonly seconds: TpsChartRange;
+  /** 「每步平均」那块看最近几步。 */
+  readonly steps: TpsStepRange;
   /** 打开时点的是**哪个会话**的胶囊（弹层据此读那一份历史）。 */
   readonly stream: SessionStream | undefined;
 }
 
-/** 初始状态：关闭、默认 1 分钟。 */
-const INITIAL: ChartState = { open: false, anchor: undefined, seconds: TPS_CHART_DEFAULT_SECONDS, stream: undefined };
+/** 初始状态：关闭、默认看实时速度、1 分钟 / 5 步。 */
+const INITIAL: ChartState = {
+  open: false,
+  anchor: undefined,
+  tab: CHART_DEFAULT_TAB,
+  seconds: TPS_CHART_DEFAULT_SECONDS,
+  steps: TPS_STEP_DEFAULT,
+  stream: undefined,
+};
 
 /** 当前状态（模块级单例）。 */
 let state: ChartState = INITIAL;
@@ -118,8 +136,8 @@ export function subscribeChart(listener: () => void): () => void {
  */
 export function toggleChart(anchor?: ChartAnchor, stream?: SessionStream): void {
   state = state.open
-    ? { open: false, anchor: undefined, seconds: state.seconds, stream: undefined }
-    : { open: true, anchor, seconds: state.seconds, stream };
+    ? { ...state, open: false, anchor: undefined, stream: undefined }
+    : { ...state, open: true, anchor, stream };
   emit();
 }
 
@@ -128,17 +146,37 @@ export function toggleChart(anchor?: ChartAnchor, stream?: SessionStream): void 
  */
 export function closeChart(): void {
   if (!state.open) return;
-  state = { open: false, anchor: undefined, seconds: state.seconds, stream: undefined };
+  state = { ...state, open: false, anchor: undefined, stream: undefined };
   emit();
 }
 
 /**
- * 换展示时长（弹层底部的分段按钮）。
- * @param seconds - 60 或 180（受历史长度限制）。
+ * 换标签页（左上角的两个页签）。
+ * @param tab - 实时速度 / 每步平均。
+ */
+export function setChartTab(tab: ChartTab): void {
+  if (state.tab === tab) return;
+  state = { ...state, tab };
+  emit();
+}
+
+/**
+ * 换展示时长（实时速度页下方的分段按钮）。
+ * @param seconds - 60 / 180 / 300（受历史长度限制）。
  */
 export function setChartSeconds(seconds: TpsChartRange): void {
   if (state.seconds === seconds) return;
   state = { ...state, seconds };
+  emit();
+}
+
+/**
+ * 换「看最近几步」（每步平均页下方的分段按钮）。
+ * @param steps - 5 / 10 / 20。
+ */
+export function setChartSteps(steps: TpsStepRange): void {
+  if (state.steps === steps) return;
+  state = { ...state, steps };
   emit();
 }
 

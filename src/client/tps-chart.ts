@@ -41,21 +41,33 @@
 import { createElement, useEffect, useState, type ReactElement, type ReactNode } from "react";
 
 import { axisScale, buildGeometry } from "./chart-geometry";
-import { closeChart, getChartState, readPillRect, setChartSeconds, subscribeChart, type ChartAnchor } from "./chart-store";
+import {
+  closeChart,
+  getChartState,
+  readPillRect,
+  setChartSeconds,
+  setChartSteps,
+  setChartTab,
+  subscribeChart,
+  type ChartAnchor,
+  type ChartState,
+  type ChartTab,
+} from "./chart-store";
 import type { DshEvent } from "./dom";
 import { formatRate } from "./format";
 import type { SessionStream } from "./session-store";
+import { TPS_STEP_RANGES, type StepSummary, type TpsStepRange } from "./step-history";
 import { HAIRLINE, INK, INK_STRONG, SURFACE, TYPO } from "./styles";
 import { TPS_CHART_RANGES, type TpsChartRange, type TpsSeriesSummary } from "./tps-history";
 
-/** 弹层宽度（像素）。 */
+/** 弹层宽度（像素）：一个页签独占整宽，比并列时窄一点也看得清。 */
 const PANEL_WIDTH = 344;
 
-/** 弹层内边距（像素）：左右各 12px → 内容宽 320px。 */
+/** 弹层内边距（像素）：左右各 12px。 */
 const PANEL_PADDING_X = 12;
 
 /** 绘图区宽度（SVG 单位，等于内容宽减去左边距）。 */
-const PLOT_WIDTH = 284;
+const PLOT_WIDTH = PANEL_WIDTH - 2 * PANEL_PADDING_X - 32;
 
 /** 绘图区高度（SVG 单位）。 */
 const PLOT_HEIGHT = 92;
@@ -67,7 +79,7 @@ const PLOT_LEFT = 32;
 const PLOT_TOP = 8;
 
 /** 整个 SVG 的 viewBox 宽（= 弹层内容宽，所以横向不会拉伸变形）。 */
-const SVG_WIDTH = 320;
+const SVG_WIDTH = PANEL_WIDTH - 2 * PANEL_PADDING_X;
 
 /** 整个 SVG 的 viewBox 高（含底部横轴标签）。 */
 const SVG_HEIGHT = 118;
@@ -175,6 +187,7 @@ function rangeButtonStyle(active: boolean): Record<string, string | number> {
  * @returns 文案。
  */
 function rangeLabel(seconds: TpsChartRange): string {
+  if (seconds >= 300) return "5 分钟";
   return seconds >= 180 ? "3 分钟" : "1 分钟";
 }
 
@@ -237,17 +250,23 @@ export function TpsChart(): unknown {
    * 位置每次重画都重新读：优先用仓库里登记的**胶囊当前矩形**（弹层开着时用户
    * 滚动页面或拖窗口，胶囊会动）；仓库里没有元素才退回打开时存下的那份快照。
    */
-  return renderPanel(state.seconds, readPillRect() ?? state.anchor, state.stream);
+  return renderPanel(state, readPillRect() ?? state.anchor);
 }
 
 /**
- * 渲染弹层内容。
- * @param seconds - 展示时长。
+ * 渲染弹层内容（**左上角两个标签页**，2026-11-13 用户第二版要求）。
+ *
+ * > 现在你设计的是并列显示，我需要的是可以在左上角进行选择，然后整个页面都进行切换。
+ *
+ * 上一版把「实时速度」和「每步平均」并排画成两块，用户不要那个形状：
+ * 左上角选一个，整张图跟着换。这样每张图能独占整个宽度，曲线也看得清。
+ *
+ * 两个页签各自记得自己的档位（60/180/300 秒、5/10/20 步），切换页签不会重置。
+ * @param state - 弹层状态（页签 / 时长 / 步数 / 看哪个会话）。
  * @param anchor - 胶囊矩形。
- * @param stream - 点开的**是哪一份**会话历史（来自胶囊，见 `chart-store.ts`）。
  * @returns 元素。
  */
-function renderPanel(seconds: TpsChartRange, anchor: ChartAnchor | undefined, stream: SessionStream | undefined): ReactElement {
+function renderPanel(state: ChartState, anchor: ChartAnchor | undefined): ReactElement {
   const now = Date.now();
   /*
    * **没有会话就没有曲线**。
@@ -257,25 +276,22 @@ function renderPanel(seconds: TpsChartRange, anchor: ChartAnchor | undefined, st
    * 这里就只剩一个空壳 —— 与其去读一个不知道是谁的全局历史（那正是用户报的
    * 「怎么是全局速度」），不如老实显示空态。
    */
-  const points = stream === undefined ? [] : stream.history.series(now, seconds);
-  const summary: TpsSeriesSummary =
-    stream === undefined
-      ? { average: 0, peak: 0, latest: 0 }
-      : stream.history.summary(now, seconds);
-  const scale = axisScale(summary.peak);
-  const geometry = buildGeometry(
-    points.map((point) => point.value),
-    { width: PLOT_WIDTH, height: PLOT_HEIGHT, max: scale.max },
-  );
+  const stream = state.stream;
+  const timeView = timeSeriesOf(stream, now, state.seconds);
+  const stepView = stepSeriesOf(stream, state.steps);
   const placement = panelPlacement(anchor);
-  const quiet = summary.peak < 0.5;
+  const seconds = state.seconds;
+  const steps = state.steps;
 
   return createElement(
     "div",
     {
       [PANEL_ATTRIBUTE]: "",
       role: "dialog",
-      "aria-label": `实时输出速度（TPS）折线图，最近 ${rangeLabel(seconds)}`,
+      "aria-label":
+        state.tab === "time"
+          ? `实时输出速度（TPS），最近 ${rangeLabel(seconds)}`
+          : `每步平均输出速度，最近 ${stepLabel(steps)}`,
       style: {
         position: "fixed",
         left: `${placement.left}px`,
@@ -294,51 +310,104 @@ function renderPanel(seconds: TpsChartRange, anchor: ChartAnchor | undefined, st
         zIndex: 1,
       },
     },
-    renderHeader(seconds, summary.latest, summary.average, summary.peak),
-    renderChart({ geometry, scale, quiet, seconds }),
-    renderFooter(seconds),
+    renderHeader(state.tab),
+    state.tab === "time"
+      ? renderColumn({
+          title: `实时速度 · 最近 ${rangeLabel(seconds)}`,
+          subtitle: `当前 ${formatRate(timeView.summary.latest)} tok/s · 平均 ${formatRate(timeView.summary.average)} · 峰值 ${formatRate(timeView.summary.peak)}`,
+          geometry: timeView.geometry,
+          scale: timeView.scale,
+          // 峰值为 0 才叫「这段时间还没有输出」；有起伏时别用一句话盖住曲线。
+          emptyText: timeView.summary.peak < 0.5 ? "这段时间还没有输出" : undefined,
+          axisStart: `${seconds} 秒前`,
+          axisEnd: "现在",
+          buttons: renderRangeButtons(seconds),
+        })
+      : renderColumn({
+          title: `每步平均 · 最近 ${stepLabel(steps)}`,
+          subtitle:
+            stepView.count === 0
+              ? "还没有完成的步骤"
+              : `最新 ${formatRate(stepView.summary.latest)} tok/s · 平均 ${formatRate(stepView.summary.average)} · 峰值 ${formatRate(stepView.summary.peak)}`,
+          geometry: stepView.geometry,
+          scale: stepView.scale,
+          emptyText: stepView.count === 0 ? "这一步还没有输出" : undefined,
+          axisStart: `${stepLabel(steps)}前`,
+          axisEnd: "这一步",
+          buttons: renderStepButtons(steps),
+        }),
   );
 }
 
+/** 实时速度页的取数结果。 */
+interface TimeView {
+  readonly geometry: ReturnType<typeof buildGeometry>;
+  readonly scale: ReturnType<typeof axisScale>;
+  readonly summary: TpsSeriesSummary;
+}
+
+/** 每步平均页的取数结果。 */
+interface StepView {
+  readonly geometry: ReturnType<typeof buildGeometry>;
+  readonly scale: ReturnType<typeof axisScale>;
+  readonly summary: StepSummary;
+  /** 有几步可画（`0` 时显示空态）。 */
+  readonly count: number;
+}
+
 /**
- * 头部：标题 + 当前值 + 副标题（均值/峰值）+ 关闭按钮。
+ * 取「实时速度」这一页的数据。
+ * @param stream - 会话状态；`undefined` 时给空态。
+ * @param now - 现在（毫秒）。
  * @param seconds - 展示时长。
- * @param latest - 最新一点。
- * @param average - 区间平均。
- * @param peak - 区间峰值。
+ * @returns 几何 + 量程 + 统计值。
+ */
+function timeSeriesOf(stream: SessionStream | undefined, now: number, seconds: TpsChartRange): TimeView {
+  const points = stream === undefined ? [] : stream.history.series(now, seconds);
+  const summary: TpsSeriesSummary =
+    stream === undefined ? { average: 0, peak: 0, latest: 0 } : stream.history.summary(now, seconds);
+  const scale = axisScale(summary.peak);
+  const geometry = buildGeometry(
+    points.map((point) => point.value),
+    { width: PLOT_WIDTH, height: PLOT_HEIGHT, max: scale.max },
+  );
+  return { geometry, scale, summary };
+}
+
+/**
+ * 取「每步平均」这一页的数据。
+ * @param stream - 会话状态；`undefined` 时给空态。
+ * @param steps - 看最近几步。
+ * @returns 几何 + 量程 + 统计值。
+ */
+function stepSeriesOf(stream: SessionStream | undefined, steps: TpsStepRange): StepView {
+  const points = stream === undefined ? [] : stream.steps.series(steps);
+  const summary: StepSummary = stream === undefined ? { average: 0, peak: 0, latest: 0 } : stream.steps.summary(steps);
+  const scale = axisScale(summary.peak);
+  const geometry = buildGeometry(
+    points.map((point) => point.speed),
+    { width: PLOT_WIDTH, height: PLOT_HEIGHT, max: scale.max },
+  );
+  return { geometry, scale, summary, count: points.length };
+}
+
+/**
+ * 头部：**左上角两个页签** + 右侧关闭按钮。
+ *
+ * 页签沿用宿主分段控件的观感：未选中是透明底 + 发丝边框，选中是略深一档的描边
+ * （与下方档位按钮同一套 `rangeButtonStyle`），所以「选中的是哪个」一眼看得出。
+ * @param tab - 当前页签。
  * @returns 元素。
  */
-function renderHeader(seconds: TpsChartRange, latest: number, average: number, peak: number): ReactElement {
+function renderHeader(tab: ChartTab): ReactElement {
   return createElement(
     "div",
-    { style: { display: "flex", alignItems: "flex-start", gap: "8px", marginBottom: "6px" } },
+    { style: { display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px" } },
     createElement(
       "div",
-      { style: { display: "flex", flexDirection: "column", gap: "2px", minWidth: "0", flex: "1" } },
-      createElement(
-        "span",
-        {
-          style: {
-            /*
-             * 标题**不再加粗**、也不再用 13px：用户要求「其它文字的字体也和官方
-             * 那个保持一致」。官方胶囊正文是 12px / `label-tertiary` / 常规字重，
-             * 这里跟它一致 —— 弹层的标题只是「第一行字」，不是另一种层级。
-             */
-            fontSize: "12px",
-            lineHeight: "17px",
-            color: INK,
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-          },
-        },
-        `实时输出速度（TPS）· 最近 ${rangeLabel(seconds)}`,
-      ),
-      createElement(
-        "span",
-        { style: { color: INK, fontSize: "11px", lineHeight: "16px", whiteSpace: "nowrap" } },
-        `当前 ${formatRate(latest)} tok/s · 平均 ${formatRate(average)} · 峰值 ${formatRate(peak)}`,
-      ),
+      { style: { display: "flex", alignItems: "center", gap: "6px", flex: "1", minWidth: "0" } },
+      renderTabButton("time", "实时速度", tab),
+      renderTabButton("steps", "每步平均", tab),
     ),
     createElement(
       "button",
@@ -363,13 +432,103 @@ function renderHeader(seconds: TpsChartRange, latest: number, average: number, p
   );
 }
 
+/**
+ * 造一个页签按钮。
+ * @param value - 这个页签的身份。
+ * @param text - 按钮文案。
+ * @param current - 当前选中的页签。
+ * @returns 元素。
+ */
+function renderTabButton(value: ChartTab, text: string, current: ChartTab): ReactElement {
+  return createElement(
+    "button",
+    {
+      key: value,
+      type: "button",
+      "aria-pressed": value === current,
+      onClick: () => setChartTab(value),
+      style: rangeButtonStyle(value === current),
+    },
+    text,
+  );
+}
+
+/** 一页图的参数（页签切换后只剩一页，所以这块撑满）。 */
+interface ColumnOptions {
+  /** 标题（第一行）。 */
+  readonly title: string;
+  /** 副标题：当前 / 平均 / 峰值（第二行）。 */
+  readonly subtitle: string;
+  /** 绘图几何。 */
+  readonly geometry: ReturnType<typeof buildGeometry>;
+  /** 纵轴量程。 */
+  readonly scale: ReturnType<typeof axisScale>;
+  /** 这一段完全没有输出时显示的空态文案；`undefined` = 不显示空态。 */
+  readonly emptyText: string | undefined;
+  /** 横轴左端的标签（「60 秒前」/「5 步前」）。 */
+  readonly axisStart: string;
+  /** 横轴右端的标签（「现在」/「这一步」）。 */
+  readonly axisEnd: string;
+  /** 这一页下方的档位按钮。 */
+  readonly buttons: ReactNode;
+}
+
+/**
+ * 渲染**当前页**（标题 + 副标题 + SVG + 档位按钮）。
+ *
+ * 只有一页时不需要再包一层固定宽度：直接撑满弹层内容宽，曲线横向有更多像素。
+ * @param options - 这一页的参数。
+ * @returns 元素。
+ */
+function renderColumn(options: ColumnOptions): ReactElement {
+  return createElement(
+    "div",
+    { style: { display: "flex", flexDirection: "column", gap: "2px", width: "100%" } },
+    createElement(
+      "span",
+      {
+        style: {
+          fontSize: "12px",
+          lineHeight: "17px",
+          color: INK,
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        },
+      },
+      options.title,
+    ),
+    createElement(
+      "span",
+      {
+        style: {
+          fontSize: "11px",
+          lineHeight: "16px",
+          color: INK,
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        },
+      },
+      options.subtitle,
+    ),
+    renderChart(options),
+    options.buttons,
+  );
+}
+
 /** 折线图参数。 */
 interface ChartViewOptions {
+  /** 绘图几何。 */
   readonly geometry: ReturnType<typeof buildGeometry>;
   /** 纵轴量程（上限 / 格宽 / 刻度），由 `chart-geometry.ts` 的 `axisScale` 算好。 */
   readonly scale: ReturnType<typeof axisScale>;
-  readonly quiet: boolean;
-  readonly seconds: TpsChartRange;
+  /** 完全没有输出时显示的空态文案；`undefined` = 不显示。 */
+  readonly emptyText: string | undefined;
+  /** 横轴左端标签。 */
+  readonly axisStart: string;
+  /** 横轴右端标签。 */
+  readonly axisEnd: string;
 }
 
 /**
@@ -385,7 +544,7 @@ interface ChartViewOptions {
  * @returns 元素。
  */
 function renderChart(options: ChartViewOptions): ReactElement {
-  const { geometry, scale, quiet, seconds } = options;
+  const { geometry, scale, emptyText, axisStart, axisEnd } = options;
   const max = scale.max;
   const ticks = scale.ticks;
   const gridlines = ticks.map((tick, index) => {
@@ -472,7 +631,7 @@ function renderChart(options: ChartViewOptions): ReactElement {
           textAnchor: "start",
           fill: INK,
         },
-        `${seconds} 秒前`,
+        axisStart,
       ),
       createElement(
         "text",
@@ -483,11 +642,12 @@ function renderChart(options: ChartViewOptions): ReactElement {
           textAnchor: "end",
           fill: INK,
         },
-        "现在",
+        axisEnd,
       ),
     ),
-    quiet
-      ? createElement(
+    emptyText === undefined
+      ? null
+      : createElement(
           "div",
           {
             style: {
@@ -501,34 +661,76 @@ function renderChart(options: ChartViewOptions): ReactElement {
               pointerEvents: "none",
             },
           },
-          "这段时间还没有输出",
-        )
-      : null,
+          emptyText,
+        ),
   );
 }
 
 /**
- * 底部：时长切换（分段按钮）。
+ * 左块的档位按钮：1 / 3 / 5 分钟。
  * @param seconds - 当前时长。
  * @returns 元素。
  */
-function renderFooter(seconds: TpsChartRange): ReactElement {
-  const buttons: ReactNode[] = TPS_CHART_RANGES.map((range) =>
-    createElement(
-      "button",
-      {
-        key: `range-${range}`,
-        type: "button",
-        "aria-pressed": range === seconds,
-        onClick: () => setChartSeconds(range),
-        style: rangeButtonStyle(range === seconds),
-      },
-      rangeLabel(range),
+function renderRangeButtons(seconds: TpsChartRange): ReactElement {
+  return renderButtonRow(
+    TPS_CHART_RANGES.map((range) =>
+      createElement(
+        "button",
+        {
+          key: `range-${range}`,
+          type: "button",
+          "aria-pressed": range === seconds,
+          onClick: () => setChartSeconds(range),
+          style: rangeButtonStyle(range === seconds),
+        },
+        rangeLabel(range),
+      ),
     ),
   );
+}
+
+/**
+ * 右块的档位按钮：5 / 10 / 20 步。
+ * @param steps - 当前步数。
+ * @returns 元素。
+ */
+function renderStepButtons(steps: TpsStepRange): ReactElement {
+  return renderButtonRow(
+    TPS_STEP_RANGES.map((count) =>
+      createElement(
+        "button",
+        {
+          key: `step-${count}`,
+          type: "button",
+          "aria-pressed": count === steps,
+          onClick: () => setChartSteps(count),
+          style: rangeButtonStyle(count === steps),
+        },
+        stepLabel(count),
+      ),
+    ),
+  );
+}
+
+/**
+ * 一排档位按钮（两块共用同一套外观与布局）。
+ * @param buttons - 按钮节点。
+ * @returns 元素。
+ */
+function renderButtonRow(buttons: ReactNode[]): ReactElement {
   return createElement(
     "div",
-    { style: { display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "6px", marginTop: "6px" } },
+    { style: { display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "6px", marginTop: "4px" } },
     ...buttons,
   );
 }
+
+/**
+ * 步数档的显示文案。
+ * @param steps - 步数。
+ * @returns 文案。
+ */
+function stepLabel(steps: TpsStepRange): string {
+  return `${steps} 步`;
+}
+

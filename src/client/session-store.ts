@@ -34,7 +34,8 @@
 
 import { newTextSince, streamKeyOf, type ProgressBaseline } from "./progress";
 import { spreadCounts } from "./spread";
-import { countChars, createTpsMeter, type TpsMeter } from "./tps-meter";
+import { createStepHistory, type StepHistory } from "./step-history";
+import { countChars, createTpsMeter, tokensOf, type TpsMeter } from "./tps-meter";
 import { createTpsHistory, type TpsHistory } from "./tps-history";
 
 /** 一份会话状态。 */
@@ -45,6 +46,8 @@ export interface SessionStream {
   readonly meter: TpsMeter;
   /** 这个会话的折线图历史（最多 3 分钟）。 */
   readonly history: TpsHistory;
+  /** 这个会话**每一步**的平均速度（弹窗右上角那块用它）。 */
+  readonly steps: StepHistory;
   /** 上一次采样留下的差分基线。 */
   baseline: ProgressBaseline | undefined;
   /** 上一次采样的时刻（摊开的时间区间起点）。 */
@@ -65,6 +68,7 @@ function entryFor(key: string): SessionStream {
       sessionKey: key === UNCLAIMED ? undefined : key,
       meter: createTpsMeter(),
       history: createTpsHistory(),
+      steps: createStepHistory(),
       baseline: undefined,
       sampledAt: 0,
     };
@@ -117,6 +121,13 @@ export function pushSnapshot(entry: SessionStream, partial: unknown, at: number)
     other += counts.other;
   }
   if (cjk + other <= 0) return false;
+  /*
+   * 记一次**这一步**的交付：字符 → token，间隔按「上一次采样 → 这一次采样」计。
+   *
+   * 间隔取**原始时间差**（不像折线那样摊开）：步统计量的是「有字在流的时长」，
+   * 摊开的切片会把同一次交付拆成好多段短间隔，加起来反而失真。
+   */
+  entry.steps.add(stream, tokensOf({ cjk, other }), at - previousAt, at);
   // 这一拍的字符按「上一次采样 → 这一次采样」摊开，避免积压时读数冲顶。
   const slices = spreadCounts({ cjk, other }, previousAt, at);
   for (const slice of slices) {

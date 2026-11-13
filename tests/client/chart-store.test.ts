@@ -15,6 +15,8 @@ import {
   readPillRect,
   resetChartStateForTests,
   setChartSeconds,
+  setChartSteps,
+  setChartTab,
   setPillElement,
   subscribeChart,
   toggleChart,
@@ -68,9 +70,9 @@ describe("弹层开关", () => {
 
   it("换时长不改开关状态", () => {
     toggleChart(anchor);
-    setChartSeconds(180);
+    setChartSeconds(300);
     expect(getChartState().open).toBe(true);
-    expect(getChartState().seconds).toBe(180);
+    expect(getChartState().seconds).toBe(300);
   });
 
   it("设成同一个时长不触发通知", () => {
@@ -82,6 +84,70 @@ describe("弹层开关", () => {
     expect(calls).toBe(0);
     setChartSeconds(180);
     expect(calls).toBe(1);
+  });
+
+  it("**换步数档也不改开关状态**，且设成同一档不通知", () => {
+    toggleChart(anchor);
+    let calls = 0;
+    subscribeChart(() => {
+      calls += 1;
+    });
+    expect(getChartState().steps).toBe(5);
+    setChartSteps(5);
+    expect(calls).toBe(0);
+    setChartSteps(20);
+    expect(calls).toBe(1);
+    expect(getChartState().open).toBe(true);
+    expect(getChartState().steps).toBe(20);
+  });
+
+  it("时长与步数档**互不覆盖**（关掉再开都还在）", () => {
+    toggleChart(anchor);
+    setChartSeconds(300);
+    setChartSteps(10);
+    toggleChart(anchor);
+    toggleChart(anchor, stream);
+    expect(getChartState().seconds).toBe(300);
+    expect(getChartState().steps).toBe(10);
+  });
+
+  it("**左上角页签默认是实时速度**，切到每步平均不关窗", () => {
+    toggleChart(anchor);
+    expect(getChartState().tab).toBe("time");
+    setChartTab("steps");
+    expect(getChartState().open).toBe(true);
+    expect(getChartState().tab).toBe("steps");
+  });
+
+  it("切到同一个页签不通知；切一次只通知一次", () => {
+    let calls = 0;
+    subscribeChart(() => {
+      calls += 1;
+    });
+    setChartTab("time");
+    expect(calls).toBe(0);
+    setChartTab("steps");
+    expect(calls).toBe(1);
+  });
+
+  it("**关掉再开页签还在**（用户切过的视图不该被重置）", () => {
+    toggleChart(anchor);
+    setChartTab("steps");
+    closeChart();
+    toggleChart(anchor, stream);
+    expect(getChartState().tab).toBe("steps");
+  });
+
+  it("两个页签的档位**各自记忆**，互不覆盖", () => {
+    toggleChart(anchor);
+    setChartTab("time");
+    setChartSeconds(60);
+    setChartSteps(20);
+    setChartTab("steps");
+    setChartSeconds(300);
+    expect(getChartState().steps).toBe(20);
+    setChartTab("time");
+    expect(getChartState().seconds).toBe(300);
   });
 });
 
