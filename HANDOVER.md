@@ -22,12 +22,12 @@
 
 | 项 | 值 |
 | --- | --- |
-| 仓库 | `C:\Work\dsh-plug-in\dsh-token-tps-stats` |
+| 仓库 | `dsh-token-tps-stats`（本机工作副本路径不进版本库，接手时按自己的位置填） |
 | 远端 | `git@github.com:fsk2142/dsh-token-tps-stats.git` |
 | 版本 | `1.0.0` |
 | `tsc` | 干净 |
-| 单测 | **154 条全绿**（`tps-meter` 23 / `tps-history` 9 / `chart-geometry` 20 / `chart-store` 13 / `session-store` 20 / `step-history` 18 / `label` 7 / `install` 9 / `pacing` 11 / `live-buffer` 5 / `format` 16 / `replay-regression` 2），另有 `pnpm test:bundle` 用带 `this` 语义的假宿主跑构建产物 |
-| 构建 | 成功（`lib/client.js` **22.3 KB**（minify 后）/ gzip 8.3 KB；`lib/index.js` 1.7 KB） |
+| 单测 | **159 条全绿**（`tps-meter` 23 / `tps-history` 9 / `chart-geometry` 20 / `chart-store` 13 / `session-store` 25 / `step-history` 18 / `label` 7 / `install` 9 / `pacing` 11 / `live-buffer` 5 / `format` 16 / `replay-regression` 2），另有 `pnpm test:bundle` 用带 `this` 语义的假宿主跑构建产物 |
+| 构建 | 成功（`lib/client.js` **21.8 KB**（minify 后）/ gzip 8.1 KB；`lib/index.js` 1.7 KB） |
 | 装进 profile | **已装**（`desktop` profile，`file:` 链接到本目录；宿主读的就是 `lib/client.js`） |
 | 真机槽位 | `conversation.composer.dock` → `token-tps-stats`（order -1）；`shell.overlay` → `token-tps-stats-chart` |
 
@@ -35,7 +35,7 @@
 
 | 文件 | 职责 | 改动风险 |
 | --- | --- | --- |
-| `src/client/session-store.ts` | **每会话一份状态**：按 `sessionId` 认领 `{meter, history, steps, baseline, sampledAt}`；`pushSnapshot` 吃一拍 `legacy.partial`（差分 + 摊开 + 累加），`pushNodes` 把已完成节点的真实 `usage` 记进步账。**这是「各算各的」的关键文件** | 中（有单测） |
+| `src/client/session-store.ts` | **每会话一份状态**：按 `sessionId` 认领 `{meter, history, steps, baseline, sampledAt, nodesSeen}`；`pushSnapshot` 吃一拍 `legacy.partial`（差分 + 摊开 + 累加），`pushNodes` 把已完成节点的真实 `usage` 记进步账（**同数组引用直接跳过**，省掉每帧重扫）。**这是「各算各的」的关键文件** | 中（有单测） |
 | `src/client/label.ts` | **胶囊那行字**：固定前缀 + 定宽数字 + 单位，以及对应的无障碍文案（只有「输出文本的速度」一个语义） | 低（有单测） |
 | `src/client/step-history.ts` | **每步的一行账**（弹窗第二个页签）：按 `turn:step` 收真实 `usage` 与「有字在流」的时长；单次间隔封顶 2 秒、时长下限 500 毫秒，保留最近 40 步。时长拿不到时退回宿主节点的 `timing` | 低（有单测） |
 | `src/client/progress.ts` | **差分**：块文本提取（只认 text/reasoning）、`newTextSince`（无基线/换流/重试一律不产字符，幂等） | 低（有单测） |
@@ -287,9 +287,9 @@ pnpm typecheck && pnpm test && pnpm build
 
 ```bash
 # 通过插件管理器（写 profile 的 package.json + bundles）
-#   install_bundle target = C:\Work\dsh-plug-in\dsh-token-tps-stats
+#   install_bundle target = <本仓库的绝对路径>
 # 或者手工在 profile 的 package.json 里加：
-"dsh-token-tps-stats": "file:C:/Work/dsh-plug-in/dsh-token-tps-stats"
+"dsh-token-tps-stats": "file:<本仓库的绝对路径>"
 ```
 
 **需要重启 DSH 才会加载新 bundle。**

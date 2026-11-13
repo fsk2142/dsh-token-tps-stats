@@ -52,6 +52,12 @@ export interface SessionStream {
   baseline: ProgressBaseline | undefined;
   /** 上一次采样的时刻（摊开的时间区间起点）。 */
   sampledAt: number;
+  /**
+   * 上一次处理过的 `legacy.nodes` 引用（**不是拷贝**）。
+   *
+   * 只用来判断「这批消息没变」：同一引用就整段跳过，见 `pushNodes` 的说明。
+   */
+  nodesSeen: unknown;
 }
 
 /** 所有会话的状态（key = sessionId）。 */
@@ -71,6 +77,7 @@ function entryFor(key: string): SessionStream {
       steps: createStepHistory(),
       baseline: undefined,
       sampledAt: 0,
+      nodesSeen: undefined,
     };
     streams.set(key, entry);
   }
@@ -156,6 +163,16 @@ export function pushSnapshot(entry: SessionStream, partial: unknown, at: number)
  */
 export function pushNodes(entry: SessionStream, nodes: unknown): void {
   if (!Array.isArray(nodes)) return;
+  /*
+   * **引用没变就整段跳过**（2026-11-13 加）。
+   *
+   * 宿主对「内容没变」的 `legacy.nodes` 返回**同一个数组引用**（内部有
+   * `sameReferences` 判断，见 `dsh-client-ui-chat` 的 `rebuildFinalized`）。
+   * 而我们的 effect 每来一帧快照就会跑一次；会话越长 `nodes` 越长，逐条扫一遍
+   * 是 O(消息数) 的纯浪费。同一引用必然对应同一批用量，跳过是安全的。
+   */
+  if (entry.nodesSeen === nodes) return;
+  entry.nodesSeen = nodes;
   for (const node of nodes as readonly unknown[]) {
     if (typeof node !== "object" || node === null) continue;
     const record = node as { kind?: unknown; turn?: unknown; step?: unknown; usage?: unknown; timing?: unknown };

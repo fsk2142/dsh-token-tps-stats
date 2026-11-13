@@ -7,7 +7,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { newTextSince, streamKeyOf, textOfBlocks, type ProgressBaseline } from "../../src/client/progress";
-import { claimSessionStream, pushSnapshot, readingOf, releaseSessionStream, resetSessionStreamsForTests } from "../../src/client/session-store";
+import { claimSessionStream, pushNodes, pushSnapshot, readingOf, releaseSessionStream, resetSessionStreamsForTests } from "../../src/client/session-store";
 import { spreadCounts } from "../../src/client/spread";
 
 describe("块文本提取", () => {
@@ -175,5 +175,64 @@ describe("会话状态：各算各的", () => {
     const frames = Array.from({ length: 5 }, (_value, index) => 80 * (index + 1));
     drive(entry, frames, 1_000_000);
     expect(pushSnapshot(entry, null, 1_000_500)).toBe(false);
+  });
+});
+
+describe("pushNodes：每步的真实用量", () => {
+  beforeEach(() => {
+    resetSessionStreamsForTests();
+  });
+
+  /** 造一个带 usage 与 timing 的助手节点。 */
+  const assistantNode = (turn: number, step: number, extra: Record<string, unknown> = {}): unknown => ({
+    kind: "assistant",
+    turn,
+    step,
+    usage: { inputTokens: 100, outputTokens: 300, cacheReadTokens: 900, totalTokens: 1_320 },
+    timing: { firstTokenTime: 1_000, completedTime: 3_000 },
+    ...extra,
+  });
+
+  it("把已结束节点的 usage 记进步账", () => {
+    const entry = claimSessionStream("A");
+    pushNodes(entry, [assistantNode(1, 1)]);
+    const row = entry.steps.rows(5)[0]!;
+    expect(row.outputTokens).toBe(300);
+    expect(row.inputTokens).toBe(100);
+    expect(row.cacheReadTokens).toBe(900);
+  });
+
+  it("**同一数组引用第二次不重复处理**（会话越长越省）", () => {
+    const entry = claimSessionStream("A");
+    const nodes = [assistantNode(1, 1)];
+    pushNodes(entry, nodes);
+    pushNodes(entry, nodes);
+    expect(entry.steps.rows(20)).toHaveLength(1);
+    expect(entry.nodesSeen).toBe(nodes);
+  });
+
+  it("换了数组（哪怕内容相同）也会再看一遍 —— 幂等，不会多出行", () => {
+    const entry = claimSessionStream("A");
+    pushNodes(entry, [assistantNode(1, 1)]);
+    pushNodes(entry, [assistantNode(1, 1)]);
+    expect(entry.steps.rows(20)).toHaveLength(1);
+  });
+
+  it("跳过非助手节点、缺 turn/step 或 usage 的节点", () => {
+    const entry = claimSessionStream("A");
+    pushNodes(entry, [
+      { kind: "user", turn: 1, step: 1 },
+      { kind: "assistant", turn: "x", step: 1, usage: { outputTokens: 1 } },
+      { kind: "assistant", turn: 1, step: 1 },
+      null,
+      "not a node",
+    ]);
+    expect(entry.steps.rows(20)).toEqual([]);
+  });
+
+  it("非数组输入安全返回", () => {
+    const entry = claimSessionStream("A");
+    expect(() => pushNodes(entry, undefined)).not.toThrow();
+    expect(() => pushNodes(entry, {})).not.toThrow();
   });
 });

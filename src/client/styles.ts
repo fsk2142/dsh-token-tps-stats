@@ -90,9 +90,3 @@ export const INK_STRONG = "var(--dsw-alias-label-secondary, #6b7280)";
 
 /** 弹层里的分割线/网格色（比正文更淡，不抢折线）。 */
 export const HAIRLINE = "var(--dsw-alias-border-l1, #e5e7eb)";
-
-/** 折线颜色：与文字同色（用户要求）。 */
-export const ACCENT = INK;
-
-/** 弹层里的次级文字色（刻度、副标题）：同样并入 {@link INK}，保留名字便于替换。 */
-export const MUTED = INK;

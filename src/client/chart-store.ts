@@ -181,16 +181,6 @@ export function setChartSteps(steps: TpsStepRange): void {
 }
 
 /**
- * 换「看哪个会话」（理论上只有打开时用得到；留一个显式入口便于将来做会话对比）。
- * @param stream - 要展示的那份会话历史。
- */
-export function setChartStream(stream: SessionStream | undefined): void {
-  if (state.stream === stream) return;
-  state = { ...state, stream };
-  emit();
-}
-
-/**
  * **仅供测试**：恢复初始状态并清空订阅者，避免用例之间互相污染。
  */
 export function resetChartStateForTests(): void {

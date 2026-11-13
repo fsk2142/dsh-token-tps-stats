@@ -92,17 +92,8 @@ Definition 拿去匹配自己那份事件流 —— 累加器只能混成一锅�
 `block-end` 才填进去 —— 拿不到增量就没有速率可言）。
 
 代价：本会话实测 725 条助手回复里 **374 条（52%）只有工具调用、没有可见文字**，
-那些步骤的读数会是 0。所以胶囊分三种状态：
-
-| 状态 | 显示 | 什么时候 |
-| --- | --- | --- |
-| 有速度 | `实时输出速度（TPS）：42 tok/s` | 正文/思考正在流 |
-| 只调工具 | `实时输出速度（TPS）：工具调用中` | 有 `tool-call` 块、但参数还是空的（宿主还没填 = 还在生成） |
-| 空闲 | `实时输出速度（TPS）：0 tok/s` | 两者都不是 |
-
-「工具调用中」**复用数字那块定宽位置**，宽度与「4ch + ` tok/s`」几乎相等，
-阶段切换时胶囊不会伸缩。它只换文字，**不进速度计** —— tok/s 的口径始终是
-「输出文本的速度」。
+那些步骤显示 `0 tok/s`。中途试过显示「工具调用中」，用户看过之后决定**不要状态词** ——
+那一格只有「输出文本的速度」一个语义，插一句说明会让「这是速度吗」变含糊。
 
 ## 为什么是「估算」
 
@@ -176,7 +167,7 @@ pnpm build
 ```bash
 # 让插件管理器按本地目录安装（会写 profile 的 package.json 与 bundles 列表）
 # 或手工在 profile 的 package.json 里加：
-"dsh-token-tps-stats": "file:C:/Work/dsh-plug-in/dsh-token-tps-stats"
+"dsh-token-tps-stats": "file:<本仓库的绝对路径>"
 ```
 
 **改完 `src/` 必须重新 `pnpm build`**：profile 链接的是本目录，宿主读的是 `lib/client.js`。
@@ -188,8 +179,11 @@ pnpm build
 
 | | 未压缩 | 压缩后 |
 | --- | --- | --- |
-| `lib/client.js` | 72.6 KB | **16.3 KB** |
-| gzip | 26.2 KB | **6.5 KB** |
+| `lib/client.js` | 108.9 KB（源码合计） | **21.8 KB** |
+| gzip | — | **8.1 KB** |
+
+（`lib/client.js` 从 16.3 KB 涨到 22.6 KB 是因为加了「每步输出」那张表 + 步账 +
+页签：功能多了，产物自然会大。压缩仍在生效 —— 同样这批源码不压缩是 100 KB 量级。）
 
 另外两点也省启动开销：
 
@@ -213,13 +207,18 @@ pnpm build
 
 ```bash
 pnpm typecheck   # tsc --noEmit
-pnpm test        # vitest run
+pnpm test        # vitest run（159 条）
+pnpm test:bundle # 在 vm 里跑构建产物，校验 slots 注册的 this 语义
 pnpm build       # tsdown
 ```
 
 测试覆盖的是**纯计算**（`tps-meter` / `tps-history` / `chart-geometry` /
-`chart-store` / `pacing` / `live-buffer`）：换算系数、9 窗口语义、3 秒缓冲、
-时间轴重排、折线几何与保形平滑、弹层开关状态。
+`chart-store` / `session-store` / `step-history` / `label` / `format` / `spread`）：
+换算系数、9 窗口语义、3 秒缓冲、时间差摊开、折线几何与保形平滑、弹层开关状态、
+每步账的两种时长来源、以及 `slots.inject` 的注册时机。
+
+`pacing` / `live-buffer` 是旧时间轴方案的遗留（当前链路不再调用，产物里也没有它们），
+只为「积压 flush」那次事故保留证据与回归。
 
 `tests/client/replay-regression.test.ts` 会把本机真实流式时间线（`.tmp/replay.json`，
 不在版本库里）重放两遍：正常流式一遍、积压 flush 一遍；后者钉住「旧做法冲到
