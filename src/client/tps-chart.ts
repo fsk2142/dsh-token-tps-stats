@@ -55,6 +55,7 @@ import {
 } from "./chart-store";
 import type { DshEvent } from "./dom";
 import { formatRatio, formatRate, formatTokens } from "./format";
+import { CHART_SVG_HEIGHT, panelMinHeight } from "./panel-metrics";
 import type { SessionStream } from "./session-store";
 import { TPS_STEP_RANGES, type StepRow, type TpsStepRange } from "./step-history";
 import { HAIRLINE, INK, INK_STRONG, SURFACE, TYPO } from "./styles";
@@ -75,8 +76,8 @@ const PANEL_PADDING_X = 12;
 /** 绘图区宽度（SVG 单位，等于内容宽减去左边距）。 */
 const PLOT_WIDTH = PANEL_WIDTH - 2 * PANEL_PADDING_X - 32;
 
-/** 绘图区高度（SVG 单位）。 */
-const PLOT_HEIGHT = 92;
+/** 绘图区高度（SVG 单位）：随 {@link CHART_SVG_HEIGHT} 一起放大，用掉多出来的空间。 */
+const PLOT_HEIGHT = 99;
 
 /** 绘图区左边距：给纵轴刻度标签留位。 */
 const PLOT_LEFT = 32;
@@ -87,8 +88,15 @@ const PLOT_TOP = 8;
 /** 整个 SVG 的 viewBox 宽（= 弹层内容宽，所以横向不会拉伸变形）。 */
 const SVG_WIDTH = PANEL_WIDTH - 2 * PANEL_PADDING_X;
 
-/** 整个 SVG 的 viewBox 高（含底部横轴标签）。 */
-const SVG_HEIGHT = 118;
+/**
+ * 整个 SVG 的 viewBox 高（含底部横轴标签）。
+ *
+ * **这个数由 {@link CHART_SVG_HEIGHT} 决定**，不是随便挑的：它让时间页的高度
+ * 恰好等于「5 步」时的步数页 —— 用户 2026-11-13 要求
+ * 「实时速度和每步平均的 5 步时候的方框长宽高大小一致」。
+ * 推导在两页共用的 `panel-metrics.ts` 里，`panel-metrics.test.ts` 断言这条等式。
+ */
+const SVG_HEIGHT = CHART_SVG_HEIGHT;
 
 /**
  * 「每步」表格的列宽：步 · 读取 · 输入 · 输出 · 命中 · 速度。
@@ -315,6 +323,16 @@ function renderPanel(state: ChartState, anchor: ChartAnchor | undefined): ReactE
         top: `${placement.top}px`,
         transform: placement.below ? "none" : "translateY(-100%)",
         width: `${PANEL_WIDTH}px`,
+        /*
+         * **两页一样高**（2026-11-13 用户要求）。
+         *
+         * 时间页的高度由折线图 SVG 定死；步数页由行数定。折线图的高度已经取成
+         * 「5 步」那一档的高度（推导见 `panel-metrics.ts`），所以切页签不会跳。
+         *
+         * `minHeight` 再兜一层：步数页还没跑完一步时是空态（比 5 行矮），
+         * 光靠折线图对齐就管不住它。
+         */
+        minHeight: `${panelMinHeight()}px`,
         boxSizing: "border-box",
         padding: `10px ${PANEL_PADDING_X}px 8px`,
         // 白色（浅色主题）不透明卡片 + 宿主浮层的 elevation；字体与官方胶囊同源。
