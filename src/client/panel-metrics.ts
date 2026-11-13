@@ -55,7 +55,31 @@ export const STEP_ROW_HEIGHT = 20;
 /** 档位按钮高度（`rangeButtonStyle` 的 `height: 22px`）。 */
 export const BUTTON_HEIGHT = 22;
 
-/** 档位按钮那排的上边距（`renderButtonRow` 的 `marginTop: 4px`）。 */
+/**
+ * 档位按钮的**固定宽度**（像素）：两组按钮统一用它。
+ *
+ * 用户 2026-11-13 看过真机后提的：
+ *
+ * > 两边的按钮大小宽度不一样
+ * > 统一为 50px
+ *
+ * 根因是按钮按内容自适应宽度：`1 分钟` 比 `5 步` 宽，于是左组每个约 49px、
+ * 右组约 38~44px，两组看起来像两种控件。现在两组**每个按钮都是 50px**：
+ * 3 个按钮 + 2 个 6px 间隙 = 162px，左右两排的总宽也一致，右端对齐时整排左右都齐。
+ *
+ * 50px 装得下最长的文案（`5 分钟` / `10 步` 都是 3 个字符 ≈ 33px + 左右内边距
+ * 16px + 边框 2px ≈ 51px）—— 所以内边距收到 6px，文字仍然居中、不贴边。
+ */
+export const BUTTON_WIDTH = 50;
+
+/**
+ * 一整排档位按钮的总宽（3 个按钮 + 2 个 6px 间隙）。
+ *
+ * 两组都是 3 个按钮，所以总宽也一致 —— 右端对齐时整排左右都齐。
+ */
+export const BUTTON_ROW_WIDTH = 3 * BUTTON_WIDTH + 2 * 6;
+
+/** 档位按钮那排的上边距（`renderButtonRow` 的 `paddingTop`）。 */
 export const BUTTON_MARGIN_TOP = 4;
 
 /** 头部（页签 + 关闭）高度：页签按钮就是 {@link BUTTON_HEIGHT}。 */

@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   BUTTON_HEIGHT,
   BUTTON_MARGIN_TOP,
+  BUTTON_ROW_WIDTH,
+  BUTTON_WIDTH,
   COLUMN_GAP,
   panelContentHeight,
   panelMinHeight,
@@ -83,5 +85,17 @@ describe("版面：两个页签一样高（用户 2026-11-13 的要求）", () =
     expect(panelContentHeight(5)).toBe(panelContentHeight());
     // 10 / 20 步会更高，那时按钮也跟着往下走（行数决定的，不是错位）。
     expect(panelContentHeight(10)).toBeGreaterThan(panelContentHeight());
+  });
+
+  it("**两组按钮每个都是 50px、整排同宽**（用户：「两边的按钮大小宽度不一样」「统一为 50px」）", () => {
+    expect(BUTTON_WIDTH).toBe(50);
+    /*
+     * 两组都是 3 个按钮 + 2 个 6px 间隙，所以整排宽度天然相同（162px）。
+     * 这里把「3 个」也断言出来：将来谁改成 4 个档位，这条会先炸。
+     */
+    expect(BUTTON_ROW_WIDTH).toBe(3 * BUTTON_WIDTH + 2 * 6);
+    expect(BUTTON_ROW_WIDTH).toBe(162);
+    // 撑得下最长的文案（3 个字符 ≈ 33px，可用宽度 = 50 - 边框 2 - 内边距 12）。
+    expect(BUTTON_WIDTH - 2 - 12).toBeGreaterThanOrEqual(33);
   });
 });

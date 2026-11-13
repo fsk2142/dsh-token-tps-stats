@@ -56,7 +56,7 @@ import {
 import type { DshEvent } from "./dom";
 import { formatRatio, formatRate, formatRateWithUnit, formatTokens } from "./format";
 import { HELP_LABEL, HELP_SECTIONS } from "./help";
-import { BUTTON_MARGIN_TOP, CHART_SVG_HEIGHT, HEADER_BUTTON_SIZE, panelMinHeight } from "./panel-metrics";
+import { BUTTON_MARGIN_TOP, BUTTON_WIDTH, CHART_SVG_HEIGHT, HEADER_BUTTON_SIZE, panelMinHeight } from "./panel-metrics";
 import type { SessionStream } from "./session-store";
 import { TPS_STEP_RANGES, type StepRow, type TpsStepRange } from "./step-history";
 import { HAIRLINE, INK, INK_STRONG, SURFACE, TYPO } from "./styles";
@@ -191,19 +191,30 @@ function insideAttribute(target: unknown, attribute: string): boolean {
  *
  * 除选中态那一点视觉重量外，按钮与弹层其它文字同色 —— 用户要求「和官方那个
  * 字体颜色保持一致」，所以这里不引入品牌色蓝。
+ *
+ * `width` 由调用方给（两组按钮的文案宽度不同，见 {@link BUTTON_WIDTH}）：
+ * 不给就是按内容自然宽，那是页签用的形态。
+ * @param active - 是否选中。
+ * @param width - 固定宽度（像素）；`undefined` = 按内容宽。
+ * @returns 内联样式。
  */
-function rangeButtonStyle(active: boolean): Record<string, string | number> {
+function rangeButtonStyle(active: boolean, width?: number): Record<string, string | number> {
   return {
     border: `1px solid ${active ? INK_STRONG : HAIRLINE}`,
     background: "transparent",
     color: active ? INK_STRONG : INK,
     borderRadius: "6px",
-    padding: "0 8px",
+    /*
+     * 给了固定宽度就把内边距收窄（`8px` → `6px`）：50px 里要装下「5 分钟」这种
+     * 3 字符文案 + 居中，8px 会挤到贴边。
+     */
+    padding: width === undefined ? "0 8px" : "0 6px",
     height: "22px",
     fontFamily: TYPO.fontFamily,
     fontSize: "11px",
     lineHeight: "20px",
     cursor: "pointer",
+    ...(width === undefined ? {} : { width: `${width}px`, boxSizing: "border-box", textAlign: "center" }),
   };
 }
 
@@ -947,7 +958,7 @@ function renderRangeButtons(seconds: TpsChartRange): ReactElement {
           type: "button",
           "aria-pressed": range === seconds,
           onClick: () => setChartSeconds(range),
-          style: rangeButtonStyle(range === seconds),
+          style: rangeButtonStyle(range === seconds, BUTTON_WIDTH),
         },
         rangeLabel(range),
       ),
@@ -970,7 +981,7 @@ function renderStepButtons(steps: TpsStepRange): ReactElement {
           type: "button",
           "aria-pressed": count === steps,
           onClick: () => setChartSteps(count),
-          style: rangeButtonStyle(count === steps),
+          style: rangeButtonStyle(count === steps, BUTTON_WIDTH),
         },
         stepLabel(count),
       ),

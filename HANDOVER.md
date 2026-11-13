@@ -26,8 +26,8 @@
 | 远端 | `git@github.com:fsk2142/dsh-token-tps-stats.git` |
 | 版本 | `1.0.0` |
 | `tsc` | 干净 |
-| 单测 | **188 条全绿**（`tps-meter` 24 / `tps-history` 10 / `chart-geometry` 20 / `chart-store` 13 / `session-store` 30 / `step-history` 18 / `panel-metrics` 11 / `help` 7 / `label` 7 / `install` 9 / `pacing` 11 / `live-buffer` 5 / `format` 20 / `replay-regression` 2），另有 `pnpm test:bundle` 用带 `this` 语义的假宿主跑构建产物 |
-| 构建 | 成功（`lib/client.js` **23.8 KB**（minify 后）/ gzip 8.9 KB；`lib/index.js` 1.7 KB） |
+| 单测 | **190 条全绿**（`tps-meter` 24 / `tps-history` 10 / `chart-geometry` 20 / `chart-store` 13 / `session-store` 30 / `step-history` 18 / `panel-metrics` 11 / `help` 7 / `label` 7 / `install` 9 / `pacing` 11 / `live-buffer` 5 / `format` 20 / `replay-regression` 2），另有 `pnpm test:bundle` 用带 `this` 语义的假宿主跑构建产物 |
+| 构建 | 成功（`lib/client.js` **24.0 KB**（minify 后）/ gzip 9.0 KB；`lib/index.js` 1.7 KB） |
 | 装进 profile | **已装**（`desktop` profile，`file:` 链接到本目录；宿主读的就是 `lib/client.js`） |
 | 真机槽位 | `conversation.composer.dock` → `token-tps-stats`（order -1）；`shell.overlay` → `token-tps-stats-chart` |
 
@@ -88,6 +88,7 @@
 | 「这里当前 75 tok/s，但是后边的平均和峰值就没有单位了，至少统一一下吧」（2026-11-13） | 副标题原来只有「当前」带单位。新增 `formatRateWithUnit`（单位 `RATE_UNIT` 只此一处定义），三个读数各自带 ` tok/s`：`当前 75 tok/s · 平均 65 tok/s · 峰值 86 tok/s`。**没选**「只在最后一个补一次」—— 那种写法读者仍要往后跳三个数才找到单位，正是他抱怨的点 |
 | 「这个地方不需要这么长的说明吧，可以在右上角的 X 旁边放一个可以点击的？来进行解释说明」（2026-11-13） | 表格上方那行 446px 的说明（比 416px 内容宽还长，会被截断）搬进 `?` 展开面板；内容写成 `help.ts` 里的数据（两节，每节 3~4 条），单测断言「五个列名都解释到了」 |
 | 「宿主的真实用量 · 口径见右上角 ? 这句话不用加，另外就是右上角的 X 和 ? 加一个小方框吧，就像和每步平均那个样子」（2026-11-13） | 常驻提示**整句删除**（标题下面直接是表头）。`?` 与 `×` 改走 `iconButtonStyle`：复用 `rangeButtonStyle` 的边框与圆角，再固定成 22px 正方形 + 内容居中 —— 与页签、档位按钮同一套观感，整条头部读起来是一组控件。删掉一行后步数页矮了 22px，所以对齐改成 `panelContentHeight()` **取两页较高者**（现在是时间页 190 高于步数页 168，步数页留 22px 底部空白），而不是让两边算式凑巧相等 |
+| 「两边的按钮大小宽度不一样」「统一为 50px」（2026-11-13） | 按钮原来按文案自适应宽度：`1 分钟` 约 49px、`5 步` 约 38px，两组像两种控件。`rangeButtonStyle(active, width?)` 加可选宽度，两组档位按钮都传 `BUTTON_WIDTH = 50`；固定宽度时内边距从 8px 收到 6px（50px 里要装下 3 字符文案还居中）。3 × 50 + 2 × 6 = 162px，两排总宽天然相同。页签按钮**不传**宽度（那两个是按文字自然宽的分段控件） |
 
 `tps-history` 的历史桶**也**改成同一口径（分母固定），否则折线图的点还会顶到天上。
 
