@@ -236,3 +236,58 @@ describe("pushNodes：每步的真实用量", () => {
     expect(() => pushNodes(entry, {})).not.toThrow();
   });
 });
+
+describe("generationMs：速度在步结束后也要留住（2026-11-13 用户反馈）", () => {
+  beforeEach(() => {
+    resetSessionStreamsForTests();
+  });
+
+  /**
+   * 造一个助手节点（字段名与宿主 `finalNode` 完全一致）。
+   * @param timing - 宿主的 `timing`。
+   * @returns 节点。
+   */
+  const nodeWith = (timing: Record<string, unknown>): unknown => ({
+    kind: "assistant",
+    turn: 1,
+    step: 1,
+    usage: { inputTokens: 100, outputTokens: 600, cacheReadTokens: 900, totalTokens: 1_600 },
+    timing,
+  });
+
+  /** 记一条人，返回它的速度。 */
+  const speedOf = (timing: Record<string, unknown>): number | undefined => {
+    const entry = claimSessionStream("A");
+    pushNodes(entry, [nodeWith(timing)]);
+    return entry.steps.rows(1)[0]?.speed;
+  };
+
+  it("**有首 token 时刻**：用 `completedTime − firstTokenTime`", () => {
+    // 600 token / 2 秒 = 300 tok/s。
+    expect(speedOf({ stepStartTime: 500, firstTokenTime: 1_000, completedTime: 3_000 })).toBeCloseTo(300, 6);
+  });
+
+  it("**首 token 是 `null`**（这一步没有可识别的 token delta）→ 退回 `stepStartTime`", () => {
+    /*
+     * 用户截图里那些步全是「只有 tool-call 块」：宿主判 `isTokenDelta` 时
+     * `argumentsDelta` 为空就不算首 token，于是 `firstTokenTime` 是 `null`。
+     * 早先只实现了上一种，这些步就永远显示 `—`。
+     *
+     * 工具在 `assistant/message` **之后**才跑，所以 `completedTime − stepStartTime`
+     * 仍然是纯生成时间。600 token / 2 秒 = 300 tok/s。
+     */
+    expect(speedOf({ stepStartTime: 1_000, firstTokenTime: null, completedTime: 3_000 })).toBeCloseTo(300, 6);
+  });
+
+  it("两个时刻都缺 → `—`（不拿墙钟凑数）", () => {
+    expect(speedOf({ completedTime: 3_000 })).toBeUndefined();
+  });
+
+  it("时刻倒挂（时钟回拨）→ `—`", () => {
+    expect(speedOf({ stepStartTime: 9_000, firstTokenTime: 8_000, completedTime: 3_000 })).toBeUndefined();
+  });
+
+  it("首 token 比完成晚 → 退回 `stepStartTime` 而不是算成负数", () => {
+    expect(speedOf({ stepStartTime: 1_000, firstTokenTime: 5_000, completedTime: 3_000 })).toBeCloseTo(300, 6);
+  });
+});

@@ -195,23 +195,36 @@ export function pushNodes(entry: SessionStream, nodes: unknown): void {
 /**
  * 从宿主节点的 `timing` 折出「这一步真正在生成」的时长。
  *
- * 宿主给的是三个墙钟时刻：`stepStartTime`（步开始，含等工具）、`firstTokenTime`
- * （第一个 token 到达）、`completedTime`（生成结束）。
+ * 宿主给三个墙钟时刻：`stepStartTime`（步开始）、`firstTokenTime`（第一个 token
+ * 到达）、`completedTime`（生成结束）。**事件顺序决定了这三个里哪两段是「在生成」**：
  *
- * 用 `completedTime − firstTokenTime` 而不是 `completedTime − stepStartTime`：
- * 前者才是**模型在吐字**的那一段，后者会把「等工具返回」也算进来 —— 那正是我们
- * 在 `step-history.ts` 里一直躲着的失真。
+ * ```
+ * step/start → assistant/message → tool/call → tool/result → step/end
+ * ```
+ *
+ * 工具是在 `assistant/message` **之后**才执行的，所以「等工具返回」落在
+ * message → step/end 之间，**不在**我们要的那一段里。于是：
+ *
+ * 1. `completedTime − firstTokenTime` —— 有首 token 时刻时，这是最贴的「吐字时长」；
+ * 2. 没有首 token 时刻（`firstTokenTime` 为 `null`：这一步的增量里没有可识别的
+ *    token delta，例如一次性吐出的工具参数）时，退回
+ *    `completedTime − stepStartTime`。**这仍然是纯生成时间** —— 工具还没开始跑。
+ *
+ * 早先只实现了第 1 条，于是这些步在结束后读数是 `—`。用户在真机上正好看到
+ * 「速度在步数结束后就消失了」，说的就是这批行。
  * @param timing - 宿主节点上的 `timing`。
  * @returns 毫秒；字段缺失或倒挂时 `undefined`。
  */
 function generationMsOf(timing: unknown): number | undefined {
   if (typeof timing !== "object" || timing === null) return undefined;
-  const record = timing as { firstTokenTime?: unknown; completedTime?: unknown };
-  const first = countOf(record.firstTokenTime);
+  const record = timing as { stepStartTime?: unknown; firstTokenTime?: unknown; completedTime?: unknown };
   const done = countOf(record.completedTime);
-  if (first === undefined || done === undefined) return undefined;
-  const span = done - first;
-  return span > 0 ? span : undefined;
+  if (done === undefined) return undefined;
+  const first = countOf(record.firstTokenTime);
+  if (first !== undefined && done - first > 0) return done - first;
+  const start = countOf(record.stepStartTime);
+  if (start !== undefined && done - start > 0) return done - start;
+  return undefined;
 }
 
 /**
