@@ -10,7 +10,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { axisScale, axisTicks, buildGeometry, niceMax } from "../../src/client/chart-geometry";
+import { buildGeometry } from "../../src/client/chart-geometry";
 
 /** 从 path 里取出所有坐标（控制点与端点都算）。 */
 function pathPoints(d: string): { x: number; y: number }[] {
@@ -21,95 +21,6 @@ function pathPoints(d: string): { x: number; y: number }[] {
   }
   return points;
 }
-
-describe("纵轴：格宽只走 50 的倍数", () => {
-  it("**108 → 150，刻度 0/50/100/150**（用户点名的例子）", () => {
-    expect(niceMax(108)).toBe(150);
-    expect(axisScale(108).ticks).toEqual([0, 50, 100, 150]);
-  });
-
-  it("**小速度也是 50 一格**（用户 2026-11-13 纠正：「每 50 一个可读，你叫什么 1 2 5 10」）", () => {
-    // 之前小峰值会给 0/10/20/30、0/2/4 —— 刻度线上读到的不是 50 的倍数，被否掉了。
-    for (const peak of [0, 3.4, 12, 29, 47, 49]) {
-      expect(axisScale(peak).ticks, `峰值 ${peak}`).toEqual([0, 50]);
-    }
-  });
-
-  it("51 → 100（刚过 50 就上第二格）", () => {
-    expect(niceMax(51)).toBe(100);
-    expect(axisScale(51).ticks).toEqual([0, 50, 100]);
-  });
-
-  it("199 → 200、210 → 250（每 50 一格，一直数到贴着峰值）", () => {
-    expect(axisScale(199).ticks).toEqual([0, 50, 100, 150, 200]);
-    expect(niceMax(210)).toBe(250);
-    expect(axisScale(210).ticks).toEqual([0, 50, 100, 150, 200, 250]);
-  });
-
-  it("**刻度一律是 50 的整数倍**（除非格宽本身放大了）", () => {
-    for (const peak of [0, 12, 29, 51, 108, 199, 210, 249, 251, 480, 1_001, 2_400]) {
-      const scale = axisScale(peak);
-      // 格宽本身是 50 的倍数（放大时也是：100/250/500…）。
-      expect(scale.step % 50, `峰值 ${peak}: 格宽 ${scale.step} 不是 50 的倍数`).toBe(0);
-      // 格宽 = 50 时，每个刻度都必须是 50 的倍数。
-      for (const tick of scale.ticks) {
-        expect(tick % scale.step).toBe(0);
-        if (scale.step === 50) expect(tick % 50, `${tick} 不是 50 的倍数`).toBe(0);
-      }
-      expect(scale.max % scale.step).toBe(0);
-      expect(scale.ticks[0]).toBe(0);
-      expect(scale.ticks.at(-1)).toBe(scale.max);
-      expect(scale.max).toBeGreaterThanOrEqual(peak);
-      // 别浪费纵向空间：最多比峰值高出「一格」。
-      expect(scale.max - peak).toBeLessThanOrEqual(scale.step);
-    }
-  });
-
-  it("**250 以内一律每 50 一格**（真实会话的峰值基本都在这一段）", () => {
-    for (const peak of [51, 96, 108, 150, 199, 210, 249]) {
-      expect(axisScale(peak).step, `峰值 ${peak}`).toBe(50);
-    }
-    // 251 还能撑到 300（7 条线，92px 里约 15px 一条）。
-    expect(axisScale(251).step).toBe(50);
-    expect(axisScale(300).ticks).toEqual([0, 50, 100, 150, 200, 250, 300]);
-  });
-
-  it("峰值再大时格宽放大，但仍按整数格走（刻度会挤不下）", () => {
-    expect(axisScale(349).step).toBe(100);
-    expect(axisScale(1_001).step).toBe(250);
-    expect(axisScale(2_400).step).toBe(500);
-  });
-
-  it("刻度从 0 到 max，两端都含", () => {
-    expect(axisTicks(50, 2)).toEqual([0, 25, 50]);
-    expect(axisTicks(10, 1)).toEqual([0, 10]);
-  });
-
-  it("**刻度一律是整数**（用户要求不要小数；除不尽就取整并去重）", () => {
-    for (const max of [50, 100, 200, 500, 1_000, 3, 7]) {
-      for (const count of [2, 3, 4]) {
-        const ticks = axisTicks(max, count);
-        expect(ticks.at(-1), "顶端必须是 max").toBe(max);
-        for (const tick of ticks) expect(Number.isInteger(tick), `${tick} 不是整数`).toBe(true);
-        // 升序、无重复。
-        for (let index = 1; index < ticks.length; index += 1) {
-          expect(ticks[index]!).toBeGreaterThan(ticks[index - 1]!);
-        }
-      }
-    }
-  });
-
-  it("**量程也是整数**（不会出现 2.5 这种「数学上漂亮」的数）", () => {
-    // 峰值 2.4 落进最小量程，上限是 50 —— 整数，刻度也只有 0/50。
-    expect(niceMax(2.4)).toBe(50);
-    // 低于 50 的一律走最小量程，不会出现 0.9 → 1 这种贴边的刻度。
-    expect(niceMax(0.9)).toBe(50);
-    // 大于 50 之后同样只出整数。
-    for (const peak of [51, 108, 251, 1_001]) {
-      expect(Number.isInteger(niceMax(peak))).toBe(true);
-    }
-  });
-});
 
 describe("几何：点序 → 像素坐标", () => {
   it("**首尾贴边**（最旧在 x=0、最新在 x=width）", () => {

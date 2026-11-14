@@ -128,31 +128,6 @@ export function axisScale(peak: number, maxSegments: number = MAX_SEGMENTS): Axi
  * @param value - 峰值（tok/s）。
  * @returns 不小于 `value` 的整数上限，且上限/格宽是整数段。
  */
-export function niceMax(value: number): number {
-  return axisScale(value).max;
-}
-
-/**
- * 造纵轴刻度（从 0 到 `max`，均分 `count` 段，**只出整数**）。
- *
- * 注：图表本身用 {@link axisScale} 一起拿上限与刻度（保证刻度落在整格上）。
- * 这个函数保留给「只想要一组整数刻度」的调用方。
- * @param max - 纵轴最大值。
- * @param count - 段数（刻度数最多 count + 1）。
- * @returns 从 0 到 `max` 的整数刻度（升序、无重复）。
- */
-export function axisTicks(max: number, count = 2): number[] {
-  const safeMax = Math.max(1, Math.round(Number.isFinite(max) && max > 0 ? max : 10));
-  const safeCount = Math.max(1, Math.floor(count));
-  const ticks: number[] = [];
-  for (let index = 0; index <= safeCount; index += 1) {
-    const value = Math.round((safeMax / safeCount) * index);
-    if (index === safeCount) ticks.push(safeMax);
-    else if (value !== ticks[ticks.length - 1]) ticks.push(value);
-  }
-  return ticks;
-}
-
 /**
  * 把序列映射成绘图区内的坐标。
  *

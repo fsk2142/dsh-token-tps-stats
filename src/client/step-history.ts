@@ -32,7 +32,6 @@ export interface StepHistory {
   setRunning(turn: number, step: number, tokens: number): void;
   clearRunning(): void;
   setCompleted(nodes: readonly unknown[]): void;
-  settle(turn: number, step: number, usage: StepUsage): void;
   subscribe(listener: () => void): () => void;
   rows(count: number): StepRow[];
 }
@@ -152,15 +151,6 @@ export function createStepHistory(): StepHistory {
       if (source === nodes) return;
       source = nodes;
       materialized = false;
-      notify();
-    },
-    settle(turn, step, usage) {
-      refreshCompleted();
-      if (running?.turn === turn && running.step === step) running = undefined;
-      const id = { turn, step };
-      const position = completed.findIndex((row) => newestFirst(row, id) >= 0);
-      if (position === -1 && completed.length === MAX_STEPS) return;
-      insert(id, usage, position);
       notify();
     },
     subscribe(listener) {
