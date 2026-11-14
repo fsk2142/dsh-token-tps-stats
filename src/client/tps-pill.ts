@@ -8,11 +8,9 @@ import { pillAriaOf, pillLabelOf } from "./label";
 import type { SessionEventSourceFor } from "./session-events";
 import { createSessionStream, observeSessionSpeed, pushNodes, pushSnapshot, resetSnapshotBaseline } from "./session-store";
 import { TYPO } from "./styles";
+import { PILL_ATTRIBUTE } from "./dom-attributes";
 
 export { formatRate };
-
-/** 胶囊的标记属性（弹层用它判断「点的是不是胶囊」）。 */
-const PILL_ATTRIBUTE = "data-token-tps-pill";
 
 /**
  * 登记胶囊元素进状态仓库（`ref` 回调）。

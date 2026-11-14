@@ -65,3 +65,18 @@ export const HELP_SECTIONS: readonly HelpSection[] = [
 
 /** `?` 按钮的无障碍文案。 */
 export const HELP_LABEL = "口径说明";
+
+/**
+ * 说明面板**有多少节、多少条**。
+ *
+ * 定位要用它算「展开后弹层会长高多少」（`panel-metrics.ts` 的
+ * {@link helpBodyHeight}）—— 面板靠 `translateY(-100%)` 向上长，长高了顶边就
+ * 往上跑；不算这段，展开说明会把表头和 `x` 顶出视口。
+ *
+ * 放在这里而不是让 `panel-metrics` 直接 import `HELP_SECTIONS`：
+ * 后者会把整份说明文案（12 条中文字符串）拖进那条依赖链。
+ */
+export const HELP_SIZE = {
+  sections: HELP_SECTIONS.length,
+  lines: HELP_SECTIONS.reduce((total, section) => total + section.lines.length, 0),
+} as const;

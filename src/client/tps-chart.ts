@@ -53,22 +53,14 @@ import {
   type ChartTab,
 } from "./chart-store";
 import type { DshEvent } from "./dom";
+import { PANEL_ATTRIBUTE, PILL_ATTRIBUTE } from "./dom-attributes";
 import { formatRatio, formatRate, formatRateWithUnit, formatTokens } from "./format";
 import { HELP_LABEL, HELP_SECTIONS } from "./help";
-import { BUTTON_MARGIN_TOP, BUTTON_WIDTH, CHART_SVG_HEIGHT, HEADER_BUTTON_SIZE, panelMinHeight } from "./panel-metrics";
-import type { SessionStream } from "./session-store";
+import { BUTTON_MARGIN_TOP, BUTTON_WIDTH, CHART_SVG_HEIGHT, HEADER_BUTTON_SIZE, PANEL_WIDTH, panelMinHeight } from "./panel-metrics";
+import { panelMaxHeight, panelPlacement } from "./panel-placement";import type { SessionStream } from "./session-store";
 import { TPS_STEP_RANGES, type StepRow, type TpsStepRange } from "./step-history";
 import { HAIRLINE, INK, INK_STRONG, SURFACE, TYPO } from "./styles";
 import { TPS_CHART_RANGES, type TpsChartRange, type TpsSeriesSummary } from "./tps-history";
-
-/**
- * 弹层宽度（像素）。
- *
- * 2026-11-13 用户看过真机后要求「这个弹窗框可以再宽一些」：344px 时「每步」那张表
- * 六列挤在一起（读取/输入都是六位数的千分位数字，需要宽度才读得清）。
- * 440px = 内容宽 416px，正好放得下六列 + 折线图的留白。
- */
-const PANEL_WIDTH = 440;
 
 /** 弹层内边距（像素）：左右各 12px。 */
 const PANEL_PADDING_X = 12;
@@ -109,60 +101,8 @@ const SVG_HEIGHT = CHART_SVG_HEIGHT;
  */
 const STEP_GRID = "40px 76px 76px 56px 60px 88px";
 
-/** 弹层与胶囊之间的间距（像素）。 */
-const PANEL_GAP = 8;
-
-/** 弹层与视口边缘的最小距离（像素）。 */
-const VIEWPORT_MARGIN = 8;
-
-/** 弹层的大致高度（像素）：用于判断「上方放不下就放下面」。 */
-const PANEL_ESTIMATED_HEIGHT = 190;
-
 /** 弹层打开时的刷新间隔（毫秒）：时间轴在走，即使没有新帧也要重画。 */
 const OPEN_TICK_MS = 500;
-
-/** 胶囊的标记属性（与 `tps-pill.ts` 里的同名常量对应，见那里的说明）。 */
-const PILL_ATTRIBUTE = "data-token-tps-pill";
-
-/** 弹层根节点的标记属性（判断「点在弹层里」用）。 */
-const PANEL_ATTRIBUTE = "data-token-tps-chart";
-
-/** 弹层位置。 */
-interface PanelPlacement {
-  readonly left: number;
-  readonly top: number;
-  /** `true` = 摆在胶囊下方（上方放不下时）。 */
-  readonly below: boolean;
-}
-
-/**
- * 计算弹层位置：优先胶囊正上方；上方空间不够就放到下方；最后夹在视口内。
- * @param anchor - 胶囊的屏幕矩形（打开那一刻取得）。
- * @returns 视口坐标下的位置。
- */
-function panelPlacement(anchor: ChartAnchor | undefined): PanelPlacement {
-  const innerWidth = typeof window === "undefined" ? 0 : window.innerWidth;
-  const innerHeight = typeof window === "undefined" ? 0 : window.innerHeight;
-  if (anchor === undefined || innerWidth <= 0) {
-    // 没有锚点（理论上不会发生）：贴左下角，至少可见、可用。
-    return {
-      left: VIEWPORT_MARGIN,
-      top: Math.max(VIEWPORT_MARGIN, innerHeight - PANEL_ESTIMATED_HEIGHT),
-      below: false,
-    };
-  }
-  const left = Math.min(
-    Math.max(VIEWPORT_MARGIN, anchor.left),
-    Math.max(VIEWPORT_MARGIN, innerWidth - PANEL_WIDTH - VIEWPORT_MARGIN),
-  );
-  const roomAbove = anchor.top;
-  const below = roomAbove < PANEL_ESTIMATED_HEIGHT + VIEWPORT_MARGIN;
-  return {
-    left,
-    top: below ? anchor.bottom + PANEL_GAP : anchor.top - PANEL_GAP,
-    below,
-  };
-}
 
 /**
  * 事件目标是否落在带某个标记属性的元素内。
@@ -345,7 +285,7 @@ function renderPanel(
    */
   const stream = state.stream;
   const timeView = state.tab === "time" ? timeSeriesOf(stream, now, state.seconds) : undefined;
-  const placement = panelPlacement(anchor);
+  const placement = panelPlacement(anchor, state.tab, state.steps, undefined, help.helpOpen);
   const seconds = state.seconds;
   const steps = state.steps;
   /*
@@ -380,6 +320,21 @@ function renderPanel(
          */
         minHeight: `${panelMinHeight()}px`,
         boxSizing: "border-box",
+        /*
+         * **矮窗口里必须能滚**（2026-11-14 补）。
+         *
+         * 20 步档 + `?` 展开后弹层有 764px 高。窗口只要矮于这个数（笔记本 768px
+         * 屏减去标题栏就差不多），底部那排档位按钮与表格末行就会被推出视口；
+         * 定位那一步保证的是**表头可见**（否则连 `x` 都点不到），剩下能做的只有
+         * 让弹层自己滚 —— 否则那部分**永远够不到**。
+         *
+         * 用 `maxHeight` 而不是 `height`：装得下时高度仍然由内容决定（两页对齐的
+         * 规矩不变），只有装不下时才开始滚动。横向 `overflowX: hidden` 防止
+         * 出现横向滚动条。
+         */
+        maxHeight: `${panelMaxHeight(placement.topEdge, placement.innerHeight)}px`,
+        overflowY: "auto",
+        overflowX: "hidden",
         padding: `10px ${PANEL_PADDING_X}px 8px`,
         /*
          * **两页的档位按钮必须落在同一条底线上**（2026-11-13 用户要求）。

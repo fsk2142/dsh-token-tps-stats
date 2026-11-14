@@ -21,14 +21,28 @@
  * 于是把**折线图的高度**取成「5 行时步数页的自然高度减去其余部分」，两页在
  * 5 步这一档就逐像素相等（{@link PANEL_REFERENCE_STEPS}）。
  *
- * 下面把每个加数往来源标了出来，`tests/client/panel-metrics.test.ts` 直接断言
- * `timeBodyHeight() === stepsBodyHeight(5)` —— 以后谁改了行高忘了同步，单测先炸，
+ * > **2026-11-14 补记**：删掉那句常驻提示之后，两页的自然高度已经**不再相等**
+ * > （时间页 190、步数页 5 步 168），靠的是 `minHeight` 把矮的那页撑高。
+ * > 下面 `stepsBodyHeight` 的注释写了这段由来；`tests/client/panel-metrics.test.ts`
+ * > 断言的是「5 步这一档 `panelContentHeight(5)` 等于时间页、且大于 `stepsBodyHeight(5)`」。
+ *
+ * 下面把每个加数往来源标了出来，以后谁改了行高忘了同步，单测先炸，
  * 而不是等用户在真机上看出跳动。
  *
  * @module dsh-token-tps-stats/src/client/panel-metrics
  */
 
+import { HELP_SIZE } from "./help";
 import { TPS_STEP_DEFAULT } from "./step-history";
+
+/**
+ * 弹层宽度（像素）。
+ *
+ * 2026-11-13 用户看过真机后要求「这个弹窗框可以再宽一些」：344px 时「每步」那张表
+ * 六列挤在一起（读取/输入都是六位数的千分位数字，需要宽度才读得清）。
+ * 440px = 内容宽 416px，正好放得下六列 + 折线图的留白。
+ */
+export const PANEL_WIDTH = 440;
 
 /** 竖向 `gap`（两个页签的列容器都是 `gap: 2px`）。 */
 export const COLUMN_GAP = 2;
@@ -89,6 +103,18 @@ export const PANEL_PADDING_TOP = 10;
 
 /** 弹层下内边距。 */
 export const PANEL_PADDING_BOTTOM = 8;
+
+/** `?` 说明里每条/每节标题的行高（`renderHelp` 的 `lineHeight: 16px`）。 */
+export const HELP_ROW_HEIGHT = 16;
+
+/** `?` 说明条目之间的间距（`renderHelp` 的 `gap: 1px`）。 */
+export const HELP_LINE_GAP = 1;
+
+/** `?` 说明两节之间的间距（`renderHelp` 的 `gap: 6px`）。 */
+export const HELP_SECTION_GAP = 6;
+
+/** `?` 说明整块末尾的留白（`renderHelp` 的 `marginBottom: 8px`）。 */
+export const HELP_MARGIN_BOTTOM = 8;
 
 /**
  * **两页要对齐的那一档**：用户点名的「5 步」。
@@ -180,7 +206,7 @@ export function panelContentHeight(rows?: number): number {
  * **以两页里较高的那一页为准**（删掉那句提示之后是**时间页**更高）：挂在面板的
  * `minHeight` 上，矮的那一页就自动被撑到同一高度 —— 用户要的「方框大小一致」
  * 就是这样落实的，而不是靠两页各自的算式恰好相等（那种巧合一改行高就散）。
- * 顺带兜住空态：黑没有行时面板也不会缩。
+ * 顺带兜住空态：连一行都没有时面板也不会缩。
  * @returns 像素。
  */
 export function panelMinHeight(): number {
@@ -189,6 +215,72 @@ export function panelMinHeight(): number {
     HEADER_HEIGHT +
     HEADER_MARGIN_BOTTOM +
     panelContentHeight(PANEL_REFERENCE_STEPS) +
+    PANEL_PADDING_BOTTOM
+  );
+}
+
+/**
+ * **`?` 展开后多出来的高度**（`renderHelp()` 那块）。
+ *
+ * 版式与 `tps-chart.ts` 的 `renderHelp()` 对应：每条说明 `font-size: 11px` /
+ * `line-height: 16px`，条目之间 `gap: 1px`，每节之间 `gap: 6px`，
+ * 整块末尾 `marginBottom: 8px`；每节有一个标题行（同样 16px）。
+ *
+ * 对照值（`help.ts` 现在是 2 节 12 条）：2 × 16 + 12 × 16 + 6 + 12 + 8 = **250px**。
+ * @param sections - 节数。
+ * @param lines - 条目总数。
+ * @returns 像素。
+ */
+export function helpBodyHeight(sections: number, lines: number): number {
+  const sectionCount = Math.max(0, Math.floor(sections));
+  const lineCount = Math.max(0, Math.floor(lines));
+  if (sectionCount === 0) return 0;
+  return (
+    sectionCount * HELP_ROW_HEIGHT +
+    lineCount * HELP_ROW_HEIGHT +
+    (sectionCount - 1) * HELP_SECTION_GAP +
+    lineCount * HELP_LINE_GAP +
+    HELP_MARGIN_BOTTOM
+  );
+}
+
+/**
+ * **某一档的弹层外高**（含内边距与头部），与渲染出来的高度一致。
+ *
+ * ## 为什么需要它（2026-11-14 补的定位修复）
+ *
+ * 定位逻辑（`panel-placement.ts` 的 `panelPlacement`）要用面板高度判断
+ * 「上方放不放得下」。原来那里写的是**常量 190** —— 那是「时间页内容区」的值，
+ * 漏掉了内边距（18）+ 头部（22）+ 头部留白（6）= 46px；而且它不随步数档变化
+ * （20 步档真实高度是 514）。
+ *
+ * 后果：胶囊位于 `anchor.top ∈ [198, 真实高度 + 16)` 这个区间时，定位逻辑
+ * 判定「上方放得下」，实际面板却被视口顶部裁掉几十到几百像素。
+ *
+ * ## `helpOpen` 也必须算进去（2026-11-14 第二轮）
+ *
+ * `?` 展开后 `renderHelp()` 会在内容流里插进两节共 12 条说明 —— 面板一下长高
+ * 约 250px。面板是**靠 `translateY(-100%)` 向上长**的，所以变高等于**顶边往上
+ * 跑**：不把这段算进定位，展开说明就会把表头和 `x` 顶出视口。
+ * @param tab - 当前页签。
+ * @param steps - 步数页当前档位（时间页忽略）。
+ * @param helpOpen - `?` 展开与否。
+ * @param helpSize - 展开时的节数与条目数（缺省按 `help.ts` 的实际内容算）。
+ * @returns 像素。
+ */
+export function panelOuterHeight(
+  tab: "time" | "steps",
+  steps: number = PANEL_REFERENCE_STEPS,
+  helpOpen = false,
+  helpSize: { sections: number; lines: number } = HELP_SIZE,
+): number {
+  const content = tab === "time" ? timeBodyHeight() : stepsBodyHeight(Math.max(steps, PANEL_REFERENCE_STEPS));
+  return (
+    PANEL_PADDING_TOP +
+    HEADER_HEIGHT +
+    HEADER_MARGIN_BOTTOM +
+    Math.max(content, timeBodyHeight()) +
+    (helpOpen ? helpBodyHeight(helpSize.sections, helpSize.lines) : 0) +
     PANEL_PADDING_BOTTOM
   );
 }
