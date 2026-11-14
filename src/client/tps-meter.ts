@@ -54,6 +54,30 @@ export function tokensOf(counts: { cjk: number; other: number }): number {
 const TAU_SECONDS = 0.65;
 const ZERO_THRESHOLD = 0.5;
 
+/**
+ * **一次到达的隐含速率上限**（tok/s）。
+ *
+ * ## 为什么需要它（2026-11-14 用户截图：一个 3925 tok/s 的假峰）
+ *
+ * 点冲激（`span <= 0`）那一支没有时长作分母，`first += tokens / τ`；
+ * 而 `second` 在 100ms 后的读数 ≈ **0.566 × tokens**。于是 3925 反推出
+ * **约 19300 token 在一次到达里出现** —— 没有任何模型能在一次 delta 里吐 19000
+ * token，那必然是「宿主把已累计的整段文本重新 append」（重新订阅 / 重新基线 /
+ * 页面从后台回来）。同一段文字被再算一次，就成了那个尖峰。
+ *
+ * ## 为什么按**速率**钳而不是按 token 数钳
+ *
+ * 按 token 数钳（例如 600）会误伤：真实的高速输出（主线程卡 6 秒后补发 600 token）
+ * 和「重放 19300 token」在 token 数上分不开。而**速率**分得开 ——
+ * 任何模型的输出速度都有物理上界（当前实测最高约 1500 tok/s，
+ * `docs/tps-algorithm-review-gpt.md` 里 180 步的真实数据也在这个量级）。
+ *
+ * 取 {@link MAX_INTERVAL_RATE}：给 4 倍余量，同时把 19000 token 的重放钳到几百。
+ * 两种分支都钳（点冲激钳「tokens / τ」，区间积分钳「tokens / span」），
+ * 因为**两种分支都可能被重放喂爆** —— 实测 19300 token 跨 3 秒也读出了 6071。
+ */
+const MAX_INTERVAL_RATE = 3_000;
+
 interface FilterState {
   readonly first: number;
   readonly second: number;
@@ -94,14 +118,21 @@ export function createTpsMeter(): TpsMeter {
       let contribution: FilterState;
       if (span > 0) {
         // Integrate a constant input over the observed snapshot interval.
-        const rate = tokens / span;
+        /*
+         * 区间积分：分母是真实跨过的时长。**仍然要钳速率** —— 实测「19300 token
+         * 跨 3 秒」也读出了 6071 tok/s，那同样是重放，只是被摊到了 3 秒里。
+         */
+        const rate = Math.min(tokens / span, MAX_INTERVAL_RATE);
         const age = span / TAU_SECONDS;
         const weight = Math.exp(-age);
         const gain = -Math.expm1(-age);
         contribution = { first: rate * gain, second: rate * (gain - age * weight) };
       } else {
         // Point input. Chunks with identical timestamps add to the same state.
-        contribution = { first: tokens / TAU_SECONDS, second: 0 };
+        /*
+         * 点冲激：没有时长作分母，用 `tokens / τ` 当等效速率，同样钳住。
+         */
+        contribution = { first: Math.min(tokens / TAU_SECONDS, MAX_INTERVAL_RATE), second: 0 };
       }
       const arriving = afterSilence(contribution, (now - end) / 1_000);
       state = { first: previous.first + arriving.first, second: previous.second + arriving.second };
@@ -118,3 +149,6 @@ export function createTpsMeter(): TpsMeter {
     },
   };
 }
+
+/** **仅供测试**：导出上限，便于断言边界。 */
+export const TPS_METER_CONSTANTS = { maxIntervalRate: MAX_INTERVAL_RATE } as const;

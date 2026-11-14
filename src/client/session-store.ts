@@ -76,13 +76,23 @@ export function observeSessionSpeed(
 
   if (source !== undefined) {
     try {
-      unsubscribe = observeOutputEvents(source, (tokens, at, receivedAt) => {
+      /*
+       * **一个回调 = 一次 push**（2026-11-14 修「异常峰值 3925 tok/s」）。
+       *
+       * 回调里一次可能带来几百个 chunk（重新订阅 / 重新基线 / 页面回来时宿主会把
+       * 已累计的整段文本重新 append）。逐 chunk 推会让每一片都走「点冲激」
+       * （`from` 缺省等于 `at`，span 恒为 0），几百个冲激在同一毫秒叠加 → 读数爆表。
+       *
+       * 现在把整批合并成一次 push，并带上**这一批的真实起止时间**：
+       * 区间积分给出的是那段文本的真实速率，而不是 1/0 放大后的天文数字。
+       */
+      unsubscribe = observeOutputEvents(source, (batch, receivedAt) => {
         /*
          * 记「live 还活着」必须在**推数据之前**：`receivedAt` 是本地墙钟，
          * 而 `push` 里用的是宿主 `event.time`，两者不能混。
          */
         entry.lastLiveAt = receivedAt;
-        if (entry.meter.push(tokens, at, receivedAt)) entry.wake?.();
+        if (entry.meter.push(batch.tokens, batch.at, receivedAt, batch.from)) entry.wake?.();
       });
       entry.liveEvents = true;
     } catch (error: unknown) {
