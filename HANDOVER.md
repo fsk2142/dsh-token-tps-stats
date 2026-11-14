@@ -29,9 +29,9 @@
 | 远端 | `git@github.com:fsk2142/dsh-token-tps-stats.git` |
 | 版本 | `1.0.0` |
 | `tsc` | 干净 |
-| 单测 | **195 条全绿**（session-store 34 / step-history 21 / chart-store 15 / ormat 15 / 	ps-meter 13 / panel-metrics 13 / chart-axis 10 / chart-geometry 10 / install 10 / panel-placement 10 / help 7 / label 7 / live-tps 6 / live-spike 5 / panel-help-placement 5 / live-fallback 4 / dom-attributes 3 / step-grid 3 / 	ps-history 3 / eplay-regression 1），另有 pnpm test:bundle 用带 	his 语义的假宿主跑构建产物 |
-| 构建 | 成功（lib/client.js **27.4 KB**（minify 后）/ gzip 10.3 KB；lib/index.js 1.7 KB） |
-| 装进 profile | **已装**（`desktop` profile，`file:` 链接到本目录；宿主读的就是 `lib/client.js`） |
+| 单测 | **195 条全绿**（`session-store` 34 / `step-history` 21 / `chart-store` 15 / `format` 15 / `tps-meter` 13 / `panel-metrics` 13 / `chart-axis` 10 / `chart-geometry` 10 / `install` 10 / `panel-placement` 10 / `help` 7 / `label` 7 / `live-tps` 6 / `live-spike` 5 / `panel-help-placement` 5 / `live-fallback` 4 / `dom-attributes` 3 / `step-grid` 3 / `tps-history` 3 / `replay-regression` 1），另有 `pnpm test:bundle` 用带 `this` 语义的假宿主跑构建产物 |
+| 构建 | 成功（`lib/client.js` **27.4 KB**（minify 后）/ gzip 10.3 KB；`lib/index.js` 1.7 KB） |
+| 装进 profile | **已装**（`desktop` profile，`link:` 到本目录；宿主读的就是 `lib/client.js`） |
 | 真机槽位 | `conversation.composer.dock` → `token-tps-stats`（order -1）；`shell.overlay` → `token-tps-stats-chart` |
 
 ## 文件职责（别搞混）
@@ -60,6 +60,11 @@
 | `src/index.ts` | **host 入口**（空 `apply`）—— 见下面「为什么必须有它」 | 低 |
 
 ## 第 3 步做了什么（2026-11-12，用户逐条提的）
+
+> **读这张表前先知道**：这一节记录的是 **2026-11-12 当时的做法**，不是当前实现。
+> 表里引用的 `live-buffer.ts` / `pacing.ts` / `niceMax` / `axisTicks` /
+> `TPS_FOLLOW_MS` / `TPS_DECAY_MS` **都已删除或已被取代**（见后面的「算法说明」）。
+> 留着的价值是「用户当时为什么提这个要求、我们怎么答的」。
 
 | 用户原话 | 怎么做 |
 | --- | --- |
@@ -234,27 +239,34 @@ tokens ≈ CJK字符 × 1.0 + 其它字符 ÷ 4.2
 **为什么必须估算**：流式 chunk 里只有字符，真实 token 要等流结束、宿主给出 `usage`。
 **质量控制**：`代码密集时偏高、纯中文时偏低`。反映趋势，不是账单。
 
-### 两层平滑
+### 两级级联滤波（`tps-meter.ts`）
 
 ```
-帧 → 毫秒桶 → 最近 9 秒平均（目标值）→ 3 秒低通 → 显示值
+一批 chunk（合并后的 tokens / from / at）→ 第一级 τ=650ms → 第二级 τ=650ms → 读数
 ```
 
-- **9 窗口**（`TPS_WINDOWS`，用户明确要求「至少 9 个」）。**分母固定 9、空窗按 0** ——
-  这就是防冲高的核心（改回「只数有数据的窗口」会立刻把 300 多那个 bug 还回来）。
-- **3 秒低通**（`TPS_FOLLOW_MS`）：`显示 += (目标 - 显示) × (1 - e^(-dt/τ))`。
-  单步最多消化 `TPS_FOLLOW_MAX_STEP_MS`（1s）—— 空闲时组件停表，帧突然回来时 `dt`
-  可能好几秒，不设上限就一步跳到目标，缓冲等于没做。
-- 首次读数从 **0** 起步（不是直接取目标），所以插件在流式中途挂载也是慢慢爬上去。
+- **τ = 0.65 秒，两级串联**（`TAU_SECONDS`）。稳定输出时读数约 3 秒爬到目标的 94%
+  （用户要的是「缓升缓降」，不是「跟得上」）。
+- **区间积分 vs 点冲激**：一批 chunk 带真实起止时间时按区间积分
+  （`rate = tokens / (at − from)`）；时间戳全相同（span = 0）时走点冲激
+  （`first += tokens / τ`）。
+- **隐含速率上限 3000 tok/s**（`MAX_INTERVAL_RATE`）：两条分支都钳。这不是「性能上限」，
+  是**防重放** —— 宿主重新订阅 / 重新基线时会把已累计的整段文本重新 append 一遍，
+  一次到达上万 token，不钳就会读出几千 tok/s 的假峰（用户 2026-11-14 见过 **3925**）。
+  用真实数据标定：单拍最大 85 token、最大隐含速率 474 tok/s，3000 有 6.3 倍余量。
+- **一批一次 push**：`session-events.ts` 把**同一个回调里的所有 chunk 合并成一次**
+  上报（带这一批的 `from` / `at`）。逐 chunk 推会让每一片都走点冲激，
+  几百片在同一毫秒叠加 —— 这正是 3925 那个尖峰的成因。
 
-### 指针回落
+### 读数与停表
 
-- 超过 `TPS_IDLE_GRACE_MS = 800ms` 没有新帧 → 认为「停了」；
-- 从**显示值**（不是目标值）按指数衰减（τ = `TPS_DECAY_MS` = 3s）往下滑；
-- 低于 `0.5 tok/s` 视为 0。
+- **两级都低于 0.5 tok/s** 视为 0（`ZERO_THRESHOLD`）。
+- 收到有效增量后，胶囊**每 100ms 读一次**（`TPS_SAMPLE_MS`），同时喂给折线历史。
+  **两级都停**之后 `stopTimer()` —— 空闲时零开销，新帧到达再 `wake()`。
 
-**用户明确要求**：空闲时**显示 `0 tok/s`，不要消失**（所以 `readingAt` 返回 0 而不是
-`undefined`）。组件的定时器在归零后**停表**，新帧到达再重启 —— 空闲时零开销。
+**用户明确要求**：空闲时**显示 `0 tok/s`，不要消失**（所以 `reading()` 返回 0
+而不是 `undefined`）。
+
 
 ### 计数范围
 
@@ -339,14 +351,14 @@ pnpm typecheck && pnpm test && pnpm build
 | 折线比旁边胶囊黑一档 | 折线是不是又用了 `ACCENT`/`brand-primary`（应为 `INK` = `label-tertiary`） |
 | 点胶囊后弹层闪烁/开不动 | `pointerdown` 里是不是漏了放过 `PILL_ATTRIBUTE` |
 | 弹层位置飘 | `readPillRect()` 是否仍在每次重画时调用；`ref` 回调是否仍是模块级常量 |
-| 数字始终 0 | 检查 `arrivalTime` 是否被改回 `event.time`；检查 `role` 判定是否被改回 `chars===0` |
+| 数字始终 0 | live 通道有没有在供数（订阅成功 ≠ 有事件）；`liveChannelHealthy()` 的 1.2 秒宽限是否还在 —— 没了它，订阅成功但断流时快照回退会被永久禁用 |
 | 数字闪一下就没 | 检查窗口边界是否写成 `>= from && < to` |
-| **偶尔冲到 300 多** | `windowedRate` 的分母是不是又变回「只数有数据的窗口」 |
-| **偶尔冲到 1000 多** | 帧是不是又绕过 `live-buffer`／`pacing` 直接按到达时刻推送了；`retimeBatch` 是不是又把「太旧的帧」夹到下限（夹住会把 3 分钟以前的帧全堆在一点，读数反而爆表） |
+| **偶尔冲到几百** | `observeOutputEvents` 是不是又改成**逐 chunk** 调 `push` 了（应该按整个回调合并成一次、带 `from`/`at`） |
+| **偶尔冲到几千（如 3925）** | 宿主重新订阅/重新基线时会重放已累计的整段文本。看两处：① `session-events.ts` 是否仍在**一个回调里合并成一次** push；② `MAX_INTERVAL_RATE`（3000）是否被删——它钳的是「一次到达的隐含速率」 |
 | 曲线变成直角台阶 | `chart-geometry` 的 path 是不是又用回了 `L` |
 | 曲线在峰值处过冲 | 保形夹逼（`3 × 割线斜率`）是不是被去掉了；普通 Catmull-Rom 会过冲 |
 | 胶囊宽度还在变 | 数字那一段的 `minWidth: "4ch"` 是否还在；`formatRate` 是否会被塞进更长的小数 |
-| 数字升太快/降太快 | `TPS_FOLLOW_MS` / `TPS_DECAY_MS`（现都是 3000） |
+| 数字升太快/降太快 | `TAU_SECONDS`（现 0.65，两级串联；改大更平滑、改小更跟手） |
 | 数字偏高/偏低 | 先和官方胶囊并排对比，再考虑调 `OTHER_CHARS_PER_TOKEN`（现 4.2） |
 | 控制台 `Forced reflow` 警告 | 组件的定时器是否在归零后仍然跑（应该在归零时 `stop()`） |
 
