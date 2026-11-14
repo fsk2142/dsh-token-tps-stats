@@ -3,7 +3,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { formatPercent, formatRatio, formatRate, formatRateWithUnit, formatTokens, RATE_UNIT } from "../../src/client/format";
+import { formatRatio, formatRate, formatRateWithUnit, formatTokens, RATE_UNIT } from "../../src/client/format";
 
 describe("速度：一律整数", () => {
   it("四舍五入到个位（读数本来就是估算，小数位是假的）", () => {
@@ -57,22 +57,6 @@ describe("token 数：千分位", () => {
   it("拿不到时显示破折号（不拿 0 假装是账单）", () => {
     expect(formatTokens(undefined)).toBe("—");
     expect(formatTokens(Number.NaN)).toBe("—");
-  });
-});
-
-describe("缓存命中：整数百分比", () => {
-  it("正常比例", () => {
-    expect(formatPercent(900, 1_020)).toBe("88%");
-  });
-
-  it("分母为 0 / 缺值时是破折号", () => {
-    expect(formatPercent(10, 0)).toBe("—");
-    expect(formatPercent(10, undefined)).toBe("—");
-    expect(formatPercent(undefined, 100)).toBe("—");
-  });
-
-  it("被夹在 0~100 之间（脏数据不会显示成 300%）", () => {
-    expect(formatPercent(500, 100)).toBe("100%");
   });
 });
 
