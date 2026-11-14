@@ -42,6 +42,7 @@ import { createElement, useEffect, useState, type ReactElement, type ReactNode }
 import { axisScale, buildGeometry } from "./chart-geometry";
 import {
   closeChart,
+  focusPillElement,
   getChartState,
   readPillRect,
   setChartSeconds,
@@ -56,14 +57,21 @@ import type { DshEvent } from "./dom";
 import { PANEL_ATTRIBUTE, PILL_ATTRIBUTE } from "./dom-attributes";
 import { formatRatio, formatRate, formatRateWithUnit, formatTokens } from "./format";
 import { HELP_LABEL, HELP_SECTIONS } from "./help";
-import { BUTTON_MARGIN_TOP, BUTTON_WIDTH, CHART_SVG_HEIGHT, HEADER_BUTTON_SIZE, PANEL_WIDTH, panelMinHeight } from "./panel-metrics";
-import { panelMaxHeight, panelPlacement } from "./panel-placement";import type { SessionStream } from "./session-store";
+import {
+  BUTTON_MARGIN_TOP,
+  BUTTON_WIDTH,
+  CHART_SVG_HEIGHT,
+  HEADER_BUTTON_SIZE,
+  PANEL_PADDING_BOTTOM,
+  PANEL_PADDING_TOP,
+  PANEL_PADDING_X,
+  PANEL_WIDTH,
+} from "./panel-metrics";
+import { panelMaxHeight, panelMinHeightFor, panelPlacement } from "./panel-placement";
+import type { SessionStream } from "./session-store";
 import { TPS_STEP_RANGES, type StepRow, type TpsStepRange } from "./step-history";
 import { HAIRLINE, INK, INK_STRONG, SURFACE, TYPO } from "./styles";
 import { TPS_CHART_RANGES, type TpsChartRange, type TpsSeriesSummary } from "./tps-history";
-
-/** 弹层内边距（像素）：左右各 12px。 */
-const PANEL_PADDING_X = 12;
 
 /** 绘图区宽度（SVG 单位，等于内容宽减去左边距）。 */
 const PLOT_WIDTH = PANEL_WIDTH - 2 * PANEL_PADDING_X - 32;
@@ -94,15 +102,51 @@ const SVG_HEIGHT = CHART_SVG_HEIGHT;
  * 「每步」表格的列宽：步 · 读取 · 输入 · 输出 · 命中 · 速度。
  *
  * 用固定像素而不是 `1fr`：数字列要等宽对齐，`1fr` 会把位数不同的行错开。
- * 六列 396px + 5 个 4px 间隙 = **416px**（= 弹层内容宽），正好铺满。
  *
- * 「命中」给了 60px：99.9% 这类**带小数的读数**要放得下（整数位会进位到 100 时，
- * 命中率会多留一到两位小数，见 `format.ts` 的 `formatRatio`）。
+ * ## 为什么不是「正好 416px」（2026-11-14 修正）
+ *
+ * 原来六列合计 396 + 5 个 4px 间隙 = **416px**，等于弹层内容宽 —— 看起来完美，
+ * 但那是**假设没有滚动条**。面板现在在矮窗口里会自己滚（`overflowY: auto`），
+ * Windows 的经典滚动条占 15~17px → 内容宽只剩 ~401px → 网格溢出，
+ * 而外层是 `overflowX: hidden`，**最后一列（速度）会被直接裁掉**且没有横滚。
+ *
+ * 所以现在留 20px 余量：六列 376 + 5 个 4px 间隙 = **396px** ≤ 399px
+ *（内容宽 416 − 17px 滚动条），滚动条出现时仍然放得下。
+ *
+ * 各列都留了余量，按 11px 字号实测最长的内容：
+ *
+ * | 列 | 宽 | 最长内容 | 实测宽 |
+ * | --- | --- | --- | --- |
+ * | 步 | 40 | `#12.34` | 40 |
+ * | 读取 | 74 | `1,234,567` | 59 |
+ * | 输入 | 74 | `12,345` | 40 |
+ * | 输出 | 54 | `12,345` | 40 |
+ * | 命中 | 58 | `99.99%` | 40 |
+ * | 速度 | 76 | `1234 tok/s` | 66 |
  */
-const STEP_GRID = "40px 76px 76px 56px 60px 88px";
+const STEP_GRID = "40px 74px 74px 54px 58px 76px";
 
 /** 弹层打开时的刷新间隔（毫秒）：时间轴在走，即使没有新帧也要重画。 */
 const OPEN_TICK_MS = 500;
+
+/** `?` 展开的那块说明的 id（供 `aria-controls` 指向它）。 */
+const HELP_REGION_ID = "token-tps-help";
+
+/**
+ * 找到弹层根节点（`[PANEL_ATTRIBUTE]` 那个）。
+ *
+ * 用于「`?` 展开后把滚动位置归零」。走**鸭子类型**而不是全局 `document.querySelector`：
+ * 本仓库对 DOM 一律手写窄声明（见 `dom.d.ts`），不做标准之外的扩展。
+ *
+ * 找不到（还没挂载、或宿主换了容器）时返回 `undefined`，调用方按空操作处理。
+ * @returns 具备 `scrollTop` 的元素，或 `undefined`。
+ */
+function findPanelElement(): { scrollTop: number } | undefined {
+  const root = (window as unknown as { document?: { querySelector?: (selector: string) => unknown } }).document;
+  if (root === undefined || typeof root.querySelector !== "function") return undefined;
+  const found = root.querySelector(`[${PANEL_ATTRIBUTE}]`) as { scrollTop?: number } | null | undefined;
+  return found !== null && found !== undefined && typeof found.scrollTop === "number" ? (found as { scrollTop: number }) : undefined;
+}
 
 /**
  * 事件目标是否落在带某个标记属性的元素内。
@@ -182,6 +226,29 @@ export function TpsChart(): unknown {
 
   useEffect(() => subscribeChart(() => setState(getChartState())), []);
 
+  /*
+   * **焦点管理**（2026-11-14 补）。
+   *
+   * `role="dialog"` 的规矩是：打开时焦点进入弹层，关闭后回到**打开它的那个控件**。
+   * 不做的话键盘用户按 `Esc` 关掉之后就「失联」了 —— 焦点随面板一起消失，
+   * 得从头 Tab 一遍才能找回胶囊。
+   *
+   * 打开时聚焦关闭按钮（`×`）：它是最稳的落点 —— 不会被表格内容变化挤走，
+   * 而且「怎么关掉」这件事本身就是用户第一需要知道的。
+   */
+  useEffect(() => {
+    if (!state.open) return;
+    const element = findPanelElement() as { querySelector?: (selector: string) => { focus?(): void } | null } | undefined;
+    const close = element?.querySelector?.('[aria-label="关闭折线图"]');
+    if (typeof close?.focus === "function") close.focus();
+    /*
+     * 清理时（面板关闭或组件卸载）把焦点还给胶囊。放在 cleanup 而不是
+     * 「关闭那一刻」是因为关闭有多种路径（`×` / `Esc` / 点外面 / 会话卸载），
+     * 它们全都走 `closeChart()` → `state.open` 变化 → 这条 cleanup。
+     */
+    return () => focusPillElement();
+  }, [state.open]);
+
   useEffect(() => {
     if (!state.open) return;
     const refresh = (): void => setTick((tick) => tick + 1);
@@ -211,9 +278,22 @@ export function TpsChart(): unknown {
 
   useEffect(() => {
     if (!state.open) return;
+    /*
+     * `Esc` 关闭面板。
+     *
+     * ## 为什么**不再**无条件 `stopPropagation()`（2026-11-14 补）
+     *
+     * 原来这里在 `window` 的捕获阶段直接吞掉 `Esc`。面板开着时，宿主拿 `Esc`
+     * 取消生成 / 退出编辑的那些快捷键就全部失灵了 —— 而用户未必知道
+     * 「Esc 现在只关这个弹层」。
+     *
+     * 现在只有**焦点在弹层内**时才吞：那种情况下 `Esc` 的语义确实属于弹层
+     * （相当于关闭对话框）。焦点在别处（比如还在输入框里打字）时只关面板、
+     * 把 `Esc` 继续传给宿主，两边的习惯都不破。
+     */
     const onKey = (event: DshEvent): void => {
       if (event.key !== "Escape") return;
-      event.stopPropagation?.();
+      if (insideAttribute(event.target, PANEL_ATTRIBUTE)) event.stopPropagation?.();
       closeChart();
     };
     /*
@@ -229,7 +309,18 @@ export function TpsChart(): unknown {
       closeChart();
     };
     // 视口变了，锚点就失效了：直接关，别让弹层飘在错的地方。
-    const onResize = (): void => closeChart();
+    /*
+     * **改成跟着重画，而不是关掉**（2026-11-14）。
+     *
+     * 原来这里 `closeChart()`：拖一下窗口，正在看的表格和展开的说明直接消失。
+     * 但弹层本来就是「每次重画都重读胶囊矩形、并按新的视口高重算位置」的
+     * （见 `readPillRect()` 与 `panelPlacement` 的 `innerHeight`）—— 也就是说
+     * 它**有能力**跟着走。既然做得到，直接关掉就是多余的粗暴行为。
+     *
+     * 现在改成触发一次重画：位置、高度上限（`maxHeight`）、`?` 展开后的高度
+     * 全都会按新视口重算。
+     */
+    const onResize = (): void => setTick((tick) => tick + 1);
     window.addEventListener("keydown", onKey, true);
     window.addEventListener("pointerdown", onPointerDown, true);
     window.addEventListener("resize", onResize);
@@ -240,12 +331,28 @@ export function TpsChart(): unknown {
     };
   }, [state.open]);
 
+  /*
+   * **`?` 展开时把面板滚到顶**（2026-11-14 补）。
+   *
+   * 说明块插在表头之后、内容之前。面板已经滚过一段时插进 250px，浏览器会保持
+   * `scrollTop` 不变 —— 用户看到的是「图表往下跳 250px，说明还在视口上方」，
+   * 点 `?` 等于没反应。所以展开/收起后把滚动位置归零。
+   *
+   * 只在**已经滚动过**时才动（`scrollTop > 0`）：装得下时面板根本没滚动条，
+   * 这时什么都不做，避免无谓的滚动副作用。
+   */
+  const toggleHelp = (): void => {
+    setHelpOpen((open) => !open);
+    const element = findPanelElement();
+    if (element !== undefined && element.scrollTop > 0) element.scrollTop = 0;
+  };
+
   if (!state.open) return null;
   /*
    * 位置每次重画都重新读：优先用仓库里登记的**胶囊当前矩形**（弹层开着时用户
    * 滚动页面或拖窗口，胶囊会动）；仓库里没有元素才退回打开时存下的那份快照。
    */
-  return renderPanel(state, readPillRect() ?? state.anchor, { helpOpen, toggleHelp: () => setHelpOpen((open) => !open) });
+  return renderPanel(state, readPillRect() ?? state.anchor, { helpOpen, toggleHelp });
 }
 
 /**
@@ -318,7 +425,7 @@ function renderPanel(
          * `minHeight` 再兜一层：步数页还没跑完一步时是空态（比 5 行矮），
          * 光靠折线图对齐就管不住它。
          */
-        minHeight: `${panelMinHeight()}px`,
+        minHeight: `${panelMinHeightFor(placement.topEdge, placement.innerHeight)}px`,
         boxSizing: "border-box",
         /*
          * **矮窗口里必须能滚**（2026-11-14 补）。
@@ -335,7 +442,7 @@ function renderPanel(
         maxHeight: `${panelMaxHeight(placement.topEdge, placement.innerHeight)}px`,
         overflowY: "auto",
         overflowX: "hidden",
-        padding: `10px ${PANEL_PADDING_X}px 8px`,
+        padding: `${PANEL_PADDING_TOP}px ${PANEL_PADDING_X}px ${PANEL_PADDING_BOTTOM}px`,
         /*
          * **两页的档位按钮必须落在同一条底线上**（2026-11-13 用户要求）。
          *
@@ -364,24 +471,42 @@ function renderPanel(
     renderHeader(state.tab, help),
     help.helpOpen ? renderHelp() : null,
     timeView !== undefined
-      ? renderColumn({
-          title: `实时速度 · 最近 ${rangeLabel(seconds)}`,
-          /*
-           * 三个读数**各自带单位**（2026-11-13 用户反馈）。
-           *
-           * 原来只有「当前」带 ` tok/s`，平均和峰值是光秃秃的数字：
-           * 「当前 75 tok/s · 平均 65 · 峰值 86」。
-           */
-          subtitle: `当前 ${formatRateWithUnit(timeView.summary.latest)} · 平均 ${formatRateWithUnit(timeView.summary.average)} · 峰值 ${formatRateWithUnit(timeView.summary.peak)}`,
-          geometry: timeView.geometry,
-          scale: timeView.scale,
-          // 峰值为 0 才叫「这段时间还没有输出」；有起伏时别用一句话盖住曲线。
-          emptyText: timeView.summary.peak < 0.5 ? "这段时间还没有输出" : undefined,
-          axisStart: `${seconds} 秒前`,
-          axisEnd: "现在",
-          buttons: renderRangeButtons(seconds),
-        })
-      : renderStepTable(stream?.steps.rows(steps) ?? [], steps),
+      ? createElement(
+          "div",
+          {
+            /*
+             * **稳定的 key**（2026-11-14 补）。
+             *
+             * 三个子节点（表头 / 说明 / 内容）都是同类 `div` 且没有 key：`?` 一翻转，
+             * index 1 那个节点就被复用成说明块，图表或表格整体**重新挂载** ——
+             * 表现是每次点 `?` 图都重建一次（会闪，滚动位置也丢）。
+             * 给它一个固定的 key，React 就知道这是「同一个内容块，只是位置变了」。
+             */
+            key: `body-${state.tab}`,
+          },
+          renderColumn({
+            title: `实时速度 · 最近 ${rangeLabel(seconds)}`,
+            /*
+             * 三个读数**各自带单位**（2026-11-13 用户反馈）。
+             *
+             * 原来只有「当前」带 ` tok/s`，平均和峰值是光秃秃的数字：
+             * 「当前 75 tok/s · 平均 65 · 峰值 86」。
+             */
+            subtitle: `当前 ${formatRateWithUnit(timeView.summary.latest)} · 平均 ${formatRateWithUnit(timeView.summary.average)} · 峰值 ${formatRateWithUnit(timeView.summary.peak)}`,
+            geometry: timeView.geometry,
+            scale: timeView.scale,
+            // 峰值为 0 才叫「这段时间还没有输出」；有起伏时别用一句话盖住曲线。
+            emptyText: timeView.summary.peak < 0.5 ? "这段时间还没有输出" : undefined,
+            axisStart: `${seconds} 秒前`,
+            axisEnd: "现在",
+            buttons: renderRangeButtons(seconds),
+          }),
+        )
+      : createElement(
+          "div",
+          { key: "body-steps" },
+          renderStepTable(stream?.steps.rows(steps) ?? [], steps),
+        ),
   );
 }
 
@@ -550,7 +675,17 @@ function renderStepTable(rows: readonly StepRow[], steps: TpsStepRange): ReactEl
 function renderHelp(): ReactElement {
   return createElement(
     "div",
-    { style: { display: "flex", flexDirection: "column", gap: "6px", marginBottom: "8px" } },
+    {
+      key: "help",
+      /*
+       * `?` 的 `aria-controls` 指向这里（见 `renderHeader` 的说明）。
+       * id 固定即可：同一个会话里弹层只有一个。
+       */
+      id: HELP_REGION_ID,
+      role: "region",
+      "aria-label": HELP_LABEL,
+      style: { display: "flex", flexDirection: "column", gap: "6px", marginBottom: "8px" },
+    },
     ...HELP_SECTIONS.map((section, index) =>
       createElement(
         "div",
@@ -619,7 +754,31 @@ function iconButtonStyle(active: boolean): Record<string, string | number> {
 function renderHeader(tab: ChartTab, help: { helpOpen: boolean; toggleHelp: () => void }): ReactElement {
   return createElement(
     "div",
-    { style: { display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px" } },
+    {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: "8px",
+        /*
+         * **表头钉住**（2026-11-14 补）：面板在矮窗口里会自己滚（见 `maxHeight`
+         * / `overflowY: auto`），原来的表头是普通子节点，会跟着内容一起滚走 ——
+         * 滚到表格底部时右上角的 `×` 就不在视野里了。虽然 Esc 还能关，
+         * 但「看得见的关闭入口」不该因为滚动而消失。
+         *
+         * `sticky` + 不透明底色（`SURFACE.background` = 宿主的 `bg-base`）把它钉在
+         * 滚动容器顶部。负的 `marginTop` 抵消面板的上内边距，否则表头会在滚动时
+         * 露出上面那 10px 的缝，内容从缝里穿过去。装得下时（没有滚动条）
+         * `sticky` 等价于普通定位，观感不变。
+         */
+        position: "sticky",
+        top: `-${PANEL_PADDING_TOP}px`,
+        zIndex: 1,
+        background: SURFACE.background,
+        marginTop: `-${PANEL_PADDING_TOP}px`,
+        paddingTop: `${PANEL_PADDING_TOP}px`,
+        marginBottom: "6px",
+      },
+    },
     createElement(
       "div",
       { style: { display: "flex", alignItems: "center", gap: "6px", flex: "1", minWidth: "0" } },
@@ -634,7 +793,16 @@ function renderHeader(tab: ChartTab, help: { helpOpen: boolean; toggleHelp: () =
         {
           type: "button",
           "aria-label": HELP_LABEL,
-          "aria-pressed": help.helpOpen,
+          /*
+           * **`aria-expanded` + `aria-controls`**（2026-11-14 补）。
+           *
+           * 原来用的是 `aria-pressed`：「按下去/弹起来」是**开关按钮**的语义，
+           * 读屏用户听到的是「一个切换开关」，不知道展开了什么内容。
+           * `aria-expanded` 才是「展开/收起一块区域」的正确表达，
+           * 再用 `aria-controls` 指向那块说明 —— 读屏能顺着找到它。
+           */
+          "aria-expanded": help.helpOpen,
+          "aria-controls": help.helpOpen ? HELP_REGION_ID : undefined,
           title: HELP_LABEL,
           onClick: () => help.toggleHelp(),
           style: iconButtonStyle(help.helpOpen),
@@ -646,8 +814,7 @@ function renderHeader(tab: ChartTab, help: { helpOpen: boolean; toggleHelp: () =
         {
           type: "button",
           "aria-label": "关闭折线图",
-          onClick: () => closeChart(),
-          style: iconButtonStyle(false),
+          onClick: () => closeChart(),          style: iconButtonStyle(false),
         },
         "×",
       ),
@@ -974,6 +1141,21 @@ function renderButtonRow(buttons: ReactNode[]): ReactElement {
         marginTop: "auto",
         // 兜底：即使外层不是 flex 列（理论上不会），也还有一点间距。
         paddingTop: `${BUTTON_MARGIN_TOP}px`,
+        /*
+         * **滚动时也钉在底边**（2026-11-14 补）。
+         *
+         * `marginTop: auto` 只在有富余高度时贴底；面板溢出状态下没有富余，
+         * 这排按钮就落在滚动内容的最底部 —— 想从 20 步切回 5 步得先滚到底。
+         * `sticky bottom` 让它在滚动时也留在视野里（「按钮压底线」那条要求
+         * 本身不受影响：不滚动时它与 `auto` 的结果完全一样）。
+         *
+         * 负的 `marginBottom` 抵消面板的下内边距，否则按钮下方会多出一条
+         * 8px 的缝让内容透过去。
+         */
+        position: "sticky",
+        bottom: `-${PANEL_PADDING_BOTTOM}px`,
+        marginBottom: `-${PANEL_PADDING_BOTTOM}px`,
+        paddingBottom: `${PANEL_PADDING_BOTTOM}px`,
       },
     },
     ...buttons,

@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { PANEL_WIDTH, panelOuterHeight } from "../../src/client/panel-metrics";
-import { panelMaxHeight, panelPlacement, PANEL_GAP, VIEWPORT_MARGIN } from "../../src/client/panel-placement";
+import { PANEL_WIDTH, panelMinHeight, panelOuterHeight } from "../../src/client/panel-metrics";
+import {
+  panelMaxHeight,
+  panelMinHeightFor,
+  panelPlacement,
+  PANEL_GAP,
+  VIEWPORT_MARGIN,
+} from "../../src/client/panel-placement";
 
 /**
  * 定位（{@link panelPlacement}）的净结果：面板占据的竖带
@@ -93,6 +99,9 @@ describe("弹层定位", () => {
     const maxHeight = panelMaxHeight(placement.topEdge, placement.innerHeight);
     expect(maxHeight).toBe(600 - VIEWPORT_MARGIN - VIEWPORT_MARGIN);
     expect(maxHeight).toBeLessThan(panelOuterHeight("steps", 20, true));
+    // 盒子被压矮到可用高度，上下都留边距。
+    expect(placement.topEdge).toBe(VIEWPORT_MARGIN);
+    expect(placement.bottomEdge - placement.topEdge).toBe(maxHeight);
   });
 
   it("装得下时 maxHeight 大于内容高度（不生效）", () => {
@@ -102,5 +111,20 @@ describe("弹层定位", () => {
     });
     const maxHeight = panelMaxHeight(placement.topEdge, placement.innerHeight);
     expect(maxHeight).toBeGreaterThan(panelOuterHeight("time", 5));
+  });
+
+  it("**极矮窗口里 `minHeight` 必须退让**（CSS 里 min-height 胜过 max-height）", () => {
+    // 窗口 200px：可用只有 184px < 236px。若 minHeight 仍是 236，盒子会固定
+    // 236px 高、内容装在里面，overflow 不起作用，底部永远够不到。
+    const topEdge = VIEWPORT_MARGIN;
+    const innerHeight = 200;
+    expect(panelMinHeightFor(topEdge, innerHeight)).toBe(innerHeight - topEdge - VIEWPORT_MARGIN);
+    expect(panelMinHeightFor(topEdge, innerHeight)).toBeLessThan(panelMinHeight());
+  });
+
+  it("**正常窗口里 `minHeight` 不变**（两页一样高那条要求不受影响）", () => {
+    for (const innerHeight of [600, 900, 1_200]) {
+      expect(panelMinHeightFor(VIEWPORT_MARGIN, innerHeight), `窗口 ${innerHeight}`).toBe(panelMinHeight());
+    }
   });
 });

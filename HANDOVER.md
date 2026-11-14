@@ -29,8 +29,8 @@
 | 远端 | `git@github.com:fsk2142/dsh-token-tps-stats.git` |
 | 版本 | `1.0.0` |
 | `tsc` | 干净 |
-| 单测 | **174 条全绿**（session-store 34 / step-history 21 / chart-store 15 / ormat 15 / 	ps-meter 13 / panel-metrics 13 / chart-axis 10 / chart-geometry 10 / install 10 / help 7 / label 7 / live-tps 6 / live-spike 5 / live-fallback 4 / 	ps-history 3 / eplay-regression 1），另有 pnpm test:bundle 用带 	his 语义的假宿主跑构建产物 |
-| 构建 | 成功（lib/client.js **25.7 KB**（minify 后）/ gzip 9.7 KB；lib/index.js 1.7 KB） |
+| 单测 | **195 条全绿**（session-store 34 / step-history 21 / chart-store 15 / ormat 15 / 	ps-meter 13 / panel-metrics 13 / chart-axis 10 / chart-geometry 10 / install 10 / panel-placement 10 / help 7 / label 7 / live-tps 6 / live-spike 5 / panel-help-placement 5 / live-fallback 4 / dom-attributes 3 / step-grid 3 / 	ps-history 3 / eplay-regression 1），另有 pnpm test:bundle 用带 	his 语义的假宿主跑构建产物 |
+| 构建 | 成功（lib/client.js **27.4 KB**（minify 后）/ gzip 10.3 KB；lib/index.js 1.7 KB） |
 | 装进 profile | **已装**（`desktop` profile，`file:` 链接到本目录；宿主读的就是 `lib/client.js`） |
 | 真机槽位 | `conversation.composer.dock` → `token-tps-stats`（order -1）；`shell.overlay` → `token-tps-stats-chart` |
 

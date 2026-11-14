@@ -25,8 +25,12 @@ function registerPillElement(element: unknown): void {
     setPillElement(undefined);
     return;
   }
-  const candidate = element as { getBoundingClientRect?: () => ChartAnchor };
-  setPillElement(typeof candidate.getBoundingClientRect === "function" ? candidate as { getBoundingClientRect(): ChartAnchor } : undefined);
+  const candidate = element as { getBoundingClientRect?: () => ChartAnchor; focus?: () => void };
+  setPillElement(
+    typeof candidate.getBoundingClientRect === "function"
+      ? (candidate as { getBoundingClientRect(): ChartAnchor; focus?(): void })
+      : undefined,
+  );
 }
 
 /**

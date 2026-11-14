@@ -98,6 +98,14 @@ export const HEADER_HEIGHT = 22;
 /** 头部下方留白（`renderHeader` 的 `marginBottom: 6px`）。 */
 export const HEADER_MARGIN_BOTTOM = 6;
 
+/**
+ * 弹层左右内边距（`padding: 10px 12px 8px`）。
+ *
+ * 表格列宽（`STEP_GRID`）与折线图 SVG 宽度都按它算「内容宽」——
+ * 两边各写一份 12 就会漂走，所以收到这里。
+ */
+export const PANEL_PADDING_X = 12;
+
 /** 弹层上内边距（`padding: 10px 12px 8px`）。 */
 export const PANEL_PADDING_TOP = 10;
 

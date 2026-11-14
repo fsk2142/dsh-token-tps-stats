@@ -52,6 +52,7 @@ describe("? 展开：定位要把说明的高度算进去", () => {
   });
 
   it("**窗口不够高时（500px）贴住上边距**，表头不被顶出视口", () => {
+    const height = panelOuterHeight("steps", 20, true);
     const placement = panelPlacement(
       { left: 600, top: 420, right: 700, bottom: 440 },
       "steps",
@@ -59,7 +60,9 @@ describe("? 展开：定位要把说明的高度算进去", () => {
       { width: 1_200, height: 500 },
       true,
     );
+    expect(height).toBeGreaterThan(500);
     expect(placement.topEdge).toBe(VIEWPORT_MARGIN);
-    expect(placement.bottomEdge).toBeGreaterThan(500);
+    // 盒子被 maxHeight 压到可用高度，而不是按 764px 摆出去。
+    expect(placement.bottomEdge).toBe(500 - VIEWPORT_MARGIN);
   });
 });

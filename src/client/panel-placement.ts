@@ -23,7 +23,7 @@
  */
 
 import type { ChartAnchor, ChartTab } from "./chart-store";
-import { PANEL_WIDTH, panelOuterHeight } from "./panel-metrics";
+import { PANEL_WIDTH, panelMinHeight, panelOuterHeight } from "./panel-metrics";
 import type { TpsStepRange } from "./step-history";
 
 /** 弹层与胶囊之间的间距（像素）。 */
@@ -69,22 +69,32 @@ export function panelPlacement(
    * `?` 一展开就多 250px，不算进来会把表头和 `x` 顶出视口。
    */
   const panelHeight = panelOuterHeight(tab, steps, helpOpen);
+  /*
+   * **被 `maxHeight` 压矮之后的高度**才是盒子真实占的高度。
+   *
+   * 这一步很关键：`top` 在「放在上方」时写的是**底边**（靠 `translateY(-100%)`
+   * 往上长），底边减去的必须是**压矮后**的高度。用未压矮的 `panelHeight` 算，
+   * 矮窗口里（20 步 + `?` = 764px、窗口 500px）盒子会被推到视口底部以外 ——
+   * 明明夹好了上边距，却被自己的 `translateY` 又推回去。
+   */
+  const available = Math.max(0, innerHeight - VIEWPORT_MARGIN - VIEWPORT_MARGIN);
+  const shownHeight = Math.min(panelHeight, available);
 
   const clampTopEdge = (desired: number): number => {
     // 窗口比面板还矮时 `limit < VIEWPORT_MARGIN`，取上边距仍是最优解（表头可见）。
-    const limit = Math.max(VIEWPORT_MARGIN, innerHeight - VIEWPORT_MARGIN - panelHeight);
+    const limit = Math.max(VIEWPORT_MARGIN, innerHeight - VIEWPORT_MARGIN - shownHeight);
     return Math.min(Math.max(desired, VIEWPORT_MARGIN), limit);
   };
 
   if (anchor === undefined || innerWidth <= 0) {
-    // 没有锚点（理论上不会发生）：贴左下角，至少可见、可用。
-    const topEdge = Math.max(VIEWPORT_MARGIN, innerHeight - panelHeight);
+    // 没有锚点（理论上不会发生）：贴左下角，至少可见、可用（上下都留边距）。
+    const topEdge = Math.max(VIEWPORT_MARGIN, innerHeight - VIEWPORT_MARGIN - shownHeight);
     return {
       left: VIEWPORT_MARGIN,
       top: topEdge,
       below: true,
       topEdge,
-      bottomEdge: topEdge + panelHeight,
+      bottomEdge: topEdge + shownHeight,
       innerHeight,
     };
   }
@@ -96,15 +106,16 @@ export function panelPlacement(
   // 「上方 / 下方」都留出间距与边距，再判断哪一边装得下。
   const roomAbove = anchor.top - PANEL_GAP - VIEWPORT_MARGIN;
   const roomBelow = innerHeight - anchor.bottom - PANEL_GAP - VIEWPORT_MARGIN;
-  const below = roomAbove < panelHeight && roomBelow >= panelHeight;
-  const desiredEdge = below ? anchor.bottom + PANEL_GAP : anchor.top - PANEL_GAP - panelHeight;
+  const below = roomAbove < shownHeight && roomBelow >= shownHeight;
+  const desiredEdge = below ? anchor.bottom + PANEL_GAP : anchor.top - PANEL_GAP - shownHeight;
   const topEdge = clampTopEdge(desiredEdge);
   return {
     left,
-    top: below ? topEdge : topEdge + panelHeight,
+    // 放在上方时靠 `translateY(-100%)` 往上长，所以这里给的是**底边**，且必须是压矮后的高度。
+    top: below ? topEdge : topEdge + shownHeight,
     below,
     topEdge,
-    bottomEdge: topEdge + panelHeight,
+    bottomEdge: topEdge + shownHeight,
     innerHeight,
   };
 }
@@ -132,4 +143,27 @@ export function panelPlacement(
  */
 export function panelMaxHeight(topEdge: number, innerHeight: number): number {
   return Math.max(0, innerHeight - topEdge - VIEWPORT_MARGIN);
+}
+
+/**
+ * **弹层此刻该有的最小高度**。
+ *
+ * ## 为什么不能直接用 `panelMinHeight()`
+ *
+ * CSS 规范里 `min-height` **胜过** `max-height`。所以只挂 `maxHeight` 是不够的：
+ * 窗口矮到「可用高度 < 236」时（例如 200px 高的窄条），`minHeight: 236px` 仍然
+ * 生效 —— 盒子固定 236px 高，底部连同档位按钮一起跑到视口外，`overflowY: auto`
+ * 也救不回来（内容装在这个 236px 的盒子里，盒子本身比窗口高）。
+ *
+ * 所以极矮的时候必须让 `minHeight` 也退让到可用高度：盒子变矮 → 内容真的溢出
+ * → 内部滚动才开始工作。
+ *
+ * 平时的窗口（可用高度 ≥ 236）这个函数返回的就是 `panelMinHeight()`，
+ * 「两页一样高」那条要求不受影响。
+ * @param topEdge - 竖带顶边（`PanelPlacement.topEdge`）。
+ * @param innerHeight - 视口高。
+ * @returns 像素。
+ */
+export function panelMinHeightFor(topEdge: number, innerHeight: number): number {
+  return Math.min(panelMinHeight(), panelMaxHeight(topEdge, innerHeight));
 }

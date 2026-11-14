@@ -72,15 +72,38 @@ let state: ChartState = INITIAL;
  * 为什么存元素而不只存打开那一刻的矩形：用户可能在弹层开着时**滚动**或拖动窗口，
  * 胶囊的位置会变。存着元素就能在每次重画时读一次**当前**矩形（读自己的元素是允许的），
  * 弹层跟着胶囊走，而不是钉在打开时的旧位置上。
+ *
+ * 也用来**收回焦点**（见 {@link focusPillElement}）：弹层是 `role="dialog"`，
+ * 关闭后焦点必须回到打开它的那个控件，否则键盘用户就「失联」了。
  */
-let pillElement: { getBoundingClientRect(): ChartAnchor } | undefined;
+let pillElement: { getBoundingClientRect(): ChartAnchor; focus?(): void } | undefined;
 
 /**
  * 登记/注销胶囊元素。
  * @param element - 胶囊的 DOM 元素；`undefined` 表示卸载。
  */
-export function setPillElement(element: { getBoundingClientRect(): ChartAnchor } | undefined): void {
+export function setPillElement(
+  element: { getBoundingClientRect(): ChartAnchor; focus?(): void } | undefined,
+): void {
   pillElement = element;
+}
+
+/**
+ * 把焦点还给胶囊（弹层关闭时调用）。
+ *
+ * `role="dialog"` 的规矩是：关掉之后焦点回到**打开它的那个控件**。不做这件事，
+ * 键盘用户按 `Esc` 关掉弹层后焦点随面板一起消失，得从头 Tab 一遍才能找回胶囊。
+ *
+ * 元素已卸载、或宿主元素没有 `focus` 时是空操作。
+ */
+export function focusPillElement(): void {
+  const element = pillElement;
+  if (element === undefined || typeof element.focus !== "function") return;
+  try {
+    element.focus();
+  } catch {
+    // 元素可能已经脱离文档；聚焦失败不该抛。
+  }
 }
 
 /**
