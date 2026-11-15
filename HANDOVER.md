@@ -27,7 +27,7 @@
 | --- | --- |
 | 仓库 | `dsh-token-tps-stats`（本机工作副本路径不进版本库，接手时按自己的位置填） |
 | 远端 | `git@github.com:fsk2142/dsh-token-tps-stats.git` |
-| 版本 | `1.0.0` |
+| 版本 | `1.0.1` |
 | `tsc` | 干净 |
 | 单测 | **195 条全绿**（`session-store` 34 / `step-history` 21 / `chart-store` 15 / `format` 15 / `tps-meter` 13 / `panel-metrics` 13 / `chart-axis` 10 / `chart-geometry` 10 / `install` 10 / `panel-placement` 10 / `help` 7 / `label` 7 / `live-tps` 6 / `live-spike` 5 / `panel-help-placement` 5 / `live-fallback` 4 / `dom-attributes` 3 / `step-grid` 3 / `tps-history` 3 / `replay-regression` 1），另有 `pnpm test:bundle` 用带 `this` 语义的假宿主跑构建产物 |
 | 构建 | 成功（`lib/client.js` **27.4 KB**（minify 后）/ gzip 10.3 KB；`lib/index.js` 1.7 KB） |

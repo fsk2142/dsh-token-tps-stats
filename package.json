@@ -1,6 +1,6 @@
 {
   "name": "dsh-token-tps-stats",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "type": "module",
   "description": "Live output speed (tok/s) for the current DSH session, shown next to the composer stats pills",
