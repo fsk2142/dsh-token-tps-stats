@@ -159,6 +159,16 @@ export function timeBodyHeight(svgHeight: number = CHART_SVG_HEIGHT): number {
 }
 
 /**
+ * 「本轮细则」页的内容区高度。
+ *
+ * 明细卡固定为四行，天然比时间页矮；为了沿用用户要求的「三个页签同高」，
+ * 这里仍取 190px，与外框 `minHeight` 对齐。行数变化不改变外框。
+ */
+export function detailsBodyHeight(): number {
+  return timeBodyHeight();
+}
+
+/**
  * 步数页的内容高度（不含弹层内边距与头部）。
  *
  * 2026-11-13 用户说「宿主的真实用量 · 口径见右上角 ?」这句**不用加**，那句提示
@@ -282,8 +292,10 @@ export function panelOuterHeight(
   helpOpen = false,
   helpSize: { sections: number; lines: number } = HELP_SIZE,
 ): number {
-  // Task 3 会给 details 专用高度；在它接入前，details 暂按时间页的 190px 内容区计算。
-  const content = tab === "steps" ? stepsBodyHeight(Math.max(steps, PANEL_REFERENCE_STEPS)) : timeBodyHeight();
+  // details 与时间页共享 190px 内容区，保证第三个页签加入后外框仍不跳。
+  const content = tab === "steps"
+    ? stepsBodyHeight(Math.max(steps, PANEL_REFERENCE_STEPS))
+    : tab === "details" ? detailsBodyHeight() : timeBodyHeight();
   return (
     PANEL_PADDING_TOP +
     HEADER_HEIGHT +

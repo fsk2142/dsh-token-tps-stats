@@ -3,7 +3,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { formatRatio, formatRate, formatRateWithUnit, formatTokens, RATE_UNIT } from "../../src/client/format";
+import { formatDuration, formatRatio, formatRate, formatRateWithUnit, formatTokens, RATE_UNIT } from "../../src/client/format";
 
 describe("速度：一律整数", () => {
   it("四舍五入到个位（读数本来就是估算，小数位是假的）", () => {
@@ -40,6 +40,21 @@ describe("速度带单位：每个读数都有 tok/s（用户 2026-11-13 要求�
   it("单位只此一处定义（改文案不会漏掉某个调用点）", () => {
     expect(RATE_UNIT).toBe(" tok/s");
     expect(formatRateWithUnit(1)).toBe(`1${RATE_UNIT}`);
+  });
+});
+
+describe("耗时：两位小数秒", () => {
+  it("毫秒转秒并保留两位（4.96s / 6.60s）", () => {
+    expect(formatDuration(4_960)).toBe("4.96s");
+    expect(formatDuration(6_600)).toBe("6.60s");
+    expect(formatDuration(0)).toBe("0.00s");
+  });
+
+  it("缺失或非法值显示破折号", () => {
+    expect(formatDuration(undefined)).toBe("—");
+    expect(formatDuration(Number.NaN)).toBe("—");
+    expect(formatDuration(Number.POSITIVE_INFINITY)).toBe("—");
+    expect(formatDuration(-1)).toBe("—");
   });
 });
 

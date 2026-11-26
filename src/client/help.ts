@@ -35,8 +35,8 @@ export interface HelpSection {
 /**
  * `?` 按钮点开后显示的全部说明。
  *
- * 两个页签共用同一张说明（用户不必记住「`?` 只对某一页有效」），所以这里
- * 分两节写。每条都刻意压短：一行 40 字以内，最多占两行。
+ * 三个页签共用同一张说明（用户不必记住「`?` 只对某一页有效」），所以这里
+ * 分三节写。每条都刻意压短：一行 40 字以内，最多占两行。
  */
 export const HELP_SECTIONS: readonly HelpSection[] = [
   {
@@ -61,6 +61,17 @@ export const HELP_SECTIONS: readonly HelpSection[] = [
       "进行中按当前正文与思考估算输出，结算后显示速度",
     ],
   },
+  {
+    title: "本轮细则",
+    lines: [
+      "流式＝首 token 到完成；端到端＝步骤开始到完成",
+      "端到端包含首包、重试与步骤间工具执行",
+      "TTFT＝首 token − 步骤开始；生成＝完成 − 首 token",
+      "总计＝本轮首步开始到末步完成",
+      "本轮输出、缓存率与思维链比例按本轮汇总",
+      "运行中显示估算；数据缺失或倒挂时显示 —",
+    ],
+  },
 ];
 
 /** `?` 按钮的无障碍文案。 */
@@ -74,7 +85,7 @@ export const HELP_LABEL = "口径说明";
  * 往上跑；不算这段，展开说明会把表头和 `x` 顶出视口。
  *
  * 放在这里而不是让 `panel-metrics` 直接 import `HELP_SECTIONS`：
- * 后者会把整份说明文案（12 条中文字符串）拖进那条依赖链。
+ * 后者会把整份说明文案拖进那条依赖链。
  */
 export const HELP_SIZE = {
   sections: HELP_SECTIONS.length,
