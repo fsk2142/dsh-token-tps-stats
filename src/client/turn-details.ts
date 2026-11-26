@@ -5,12 +5,19 @@ export interface RunningStepRef {
   readonly step: number;
 }
 
+export interface TurnTiming {
+  readonly startTime: number;
+  readonly endTime?: number;
+}
+
 export interface TurnDetailsInput {
   readonly nodes: readonly unknown[];
   readonly running?: RunningStepRef;
   readonly runningTokens: number;
   readonly liveSpeed: number;
   readonly now: number;
+  /** 宿主 legacy.turnTimings；工具执行期间没有 partial 时靠它保持轮次运行态。 */
+  readonly turnTimings?: ReadonlyMap<number, TurnTiming>;
 }
 
 export interface TurnDetails {
@@ -80,36 +87,45 @@ function factsOf(raw: unknown): StepFacts | undefined {
 }
 
 function cacheRatioOf(steps: readonly StepFacts[]): number | undefined {
+  if (steps.length === 0) return undefined;
   let cached = 0;
   let prompt = 0;
-  let found = false;
   for (const step of steps) {
     const { cacheReadTokens, inputTokens, cacheWriteTokens, totalTokens, outputTokens } = step;
-    if (cacheReadTokens === undefined) continue;
-    const known = cacheReadTokens + (inputTokens ?? 0) + (cacheWriteTokens ?? 0);
-    const promptTokens = totalTokens !== undefined && outputTokens !== undefined
-      ? totalTokens - outputTokens
-      : inputTokens === undefined ? undefined : known;
-    if (promptTokens === undefined || promptTokens <= 0 || promptTokens < known) continue;
-    if (inputTokens !== undefined && cacheWriteTokens !== undefined && promptTokens !== known) continue;
+    if (cacheReadTokens === undefined) return undefined;
+    let promptTokens: number;
+    if (totalTokens !== undefined && outputTokens !== undefined) {
+      promptTokens = totalTokens - outputTokens;
+      const known = cacheReadTokens + (inputTokens ?? 0) + (cacheWriteTokens ?? 0);
+      if (promptTokens < known) return undefined;
+      if (inputTokens !== undefined && cacheWriteTokens !== undefined && promptTokens !== known) return undefined;
+    } else {
+      // 没有 total/output 时，三个 prompt 桶必须齐全，不能把缺失的写入当成 0。
+      if (inputTokens === undefined || cacheWriteTokens === undefined) return undefined;
+      promptTokens = cacheReadTokens + inputTokens + cacheWriteTokens;
+    }
+    if (promptTokens <= 0 || cacheReadTokens > promptTokens) return undefined;
     cached += cacheReadTokens;
     prompt += promptTokens;
-    found = true;
   }
-  return found ? cached / prompt : undefined;
+  return cached / prompt;
 }
 
 function reasoningRatioOf(steps: readonly StepFacts[]): number | undefined {
+  if (steps.length === 0) return undefined;
   let reasoning = 0;
   let output = 0;
-  let found = false;
   for (const step of steps) {
-    if (step.reasoningTokens === undefined || step.outputTokens === undefined || step.outputTokens <= 0) continue;
+    if (step.outputTokens === undefined) return undefined;
+    if (step.outputTokens === 0) {
+      if (step.reasoningTokens !== undefined && step.reasoningTokens !== 0) return undefined;
+      continue;
+    }
+    if (step.reasoningTokens === undefined || step.reasoningTokens > step.outputTokens) return undefined;
     reasoning += step.reasoningTokens;
     output += step.outputTokens;
-    found = true;
   }
-  return found ? reasoning / output : undefined;
+  return output > 0 ? reasoning / output : undefined;
 }
 
 /**
@@ -133,16 +149,22 @@ export function turnDetailsOf(input: TurnDetailsInput): TurnDetails | undefined 
 
   const runningTurn = countOf(input.running?.turn);
   const runningStep = countOf(input.running?.step);
-  const turn = Math.max(latestTurn, runningTurn ?? 0);
-  if (!hasNode && runningTurn === undefined) return undefined;
+  let latestTimedTurn = 0;
+  for (const timedTurn of input.turnTimings?.keys() ?? []) {
+    const value = countOf(timedTurn);
+    if (value !== undefined) latestTimedTurn = Math.max(latestTimedTurn, value);
+  }
+  const turn = Math.max(latestTurn, runningTurn ?? 0, latestTimedTurn);
+  if (!hasNode && runningTurn === undefined && latestTimedTurn === 0) return undefined;
+  const turnTiming = input.turnTimings?.get(turn);
+  const turnStartTime = countOf(turnTiming?.startTime);
+  const turnEndTime = countOf(turnTiming?.endTime);
+  const turnRunning = turnTiming !== undefined && turnEndTime === undefined;
 
   // 只保留当前轮次；上面按 step 去重的 Map 可能含有旧轮次，先过滤。
   const steps = [...byStep.values()].filter((step) => step.turn === turn).sort((a, b) => a.step - b.step);
-  const maxStep = steps.at(-1)?.step ?? 0;
-  const unsettled = runningTurn === turn && runningStep !== undefined && runningStep > maxStep;
+  const unsettled = runningTurn === turn && runningStep !== undefined && !steps.some((step) => step.step === runningStep);
   const observedMin = steps[0]?.step ?? (unsettled ? runningStep! : 0);
-  const earliest = steps.find((step) => step.step === observedMin);
-  const latest = steps.at(-1);
 
   const completeOutput = steps.every((step) => step.outputTokens !== undefined);
   const settledOutput = completeOutput
@@ -155,23 +177,29 @@ export function turnDetailsOf(input: TurnDetailsInput): TurnDetails | undefined 
     ? undefined
     : settledOutput + runningEstimate;
 
-  const start = earliest?.stepStartTime;
-  const end = unsettled ? input.now : latest?.completedTime;
-  const totalMs = observedMin === 1 && start !== undefined && Number.isFinite(end) && end! > start
+  const starts = steps.map((step) => step.stepStartTime).filter((value): value is number => value !== undefined);
+  const completions = steps.map((step) => step.completedTime).filter((value): value is number => value !== undefined);
+  const start = turnStartTime ?? (starts.length > 0 ? Math.min(...starts) : undefined);
+  const settledEnd = completions.length > 0 ? Math.max(...completions) : undefined;
+  const running = turnRunning || unsettled;
+  const end = running ? input.now : turnEndTime ?? settledEnd;
+  const ordered = steps.every((step, index) => {
+    if (step.stepStartTime === undefined || step.completedTime === undefined || step.completedTime <= step.stepStartTime) return false;
+    const previous = steps[index - 1];
+    return previous === undefined || (previous.completedTime !== undefined && previous.completedTime <= step.stepStartTime);
+  });
+  const totalMs = observedMin === 1 && ordered && start !== undefined && Number.isFinite(end) && end! > start && (!running || settledEnd === undefined || end! >= settledEnd)
     ? end! - start
     : undefined;
 
-  let ttftMs: number | undefined;
-  for (const step of steps) {
-    if (step.stepStartTime === undefined || step.firstTokenTime === undefined) continue;
-    if (step.firstTokenTime < step.stepStartTime) continue;
-    ttftMs = step.firstTokenTime - step.stepStartTime;
-    break;
-  }
+  const firstStep = steps[0];
+  const ttftMs = firstStep?.stepStartTime !== undefined && firstStep.firstTokenTime !== undefined && firstStep.firstTokenTime >= firstStep.stepStartTime
+    ? firstStep.firstTokenTime - firstStep.stepStartTime
+    : undefined;
 
   const producing = steps.filter((step) => (step.outputTokens ?? 0) > 0);
-  // 输出未知不等于输出为 0：任一已结算步骤缺 outputTokens 时，生成耗时也不能当作完整值。
-  const generationComplete = completeOutput && producing.length > 0 && producing.every((step) =>
+  // 输出未知不等于输出为 0；运行中步骤有估算输出时，生成耗时尚未结算，不能显示部分汇总。
+  const generationComplete = completeOutput && (!unsettled || runningEstimate === 0) && producing.length > 0 && producing.every((step) =>
     step.stepStartTime !== undefined &&
     step.firstTokenTime !== undefined &&
     step.completedTime !== undefined &&
@@ -194,7 +222,7 @@ export function turnDetailsOf(input: TurnDetailsInput): TurnDetails | undefined 
   return {
     turn,
     steps: steps.length + (unsettled ? 1 : 0),
-    running: unsettled,
+    running,
     totalMs,
     ttftMs,
     generationMs,

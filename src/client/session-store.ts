@@ -28,6 +28,8 @@ export interface SessionStream {
   runningStep?: number;
   /** 宿主最近一次提供的完整 legacy.nodes 引用；仅供当前轮次聚合读取。 */
   nodes?: readonly unknown[];
+  /** 宿主 legacy.turnTimings；工具执行期间没有 partial 时靠它保持轮次运行态。 */
+  turnTimings?: ReadonlyMap<number, { readonly startTime: number; readonly endTime?: number }>;
   /** live 订阅是否已建立（只用于「页面隐藏时要不要推快照」这类判断）。 */
   liveEvents: boolean;
   /**
@@ -174,6 +176,31 @@ export function pushSnapshot(entry: SessionStream, partial: unknown, at: number)
    */
   if (!liveChannelHealthy(entry, at) && entry.meter.push(tokens, at, at, sameStep ? previousAt : at)) entry.wake?.();
   return true;
+}
+
+/** 保存宿主轮次时间表；只接受有限的非负毫秒，避免脏数据进入聚合。 */
+export function pushTurnTimings(
+  entry: SessionStream,
+  raw: unknown,
+): void {
+  if (!(raw instanceof Map)) {
+    entry.turnTimings = undefined;
+    return;
+  }
+  const timings = new Map<number, { startTime: number; endTime?: number }>();
+  for (const [turn, value] of raw as Map<unknown, unknown>) {
+    if (!Number.isSafeInteger(turn) || (turn as number) < 0 || typeof value !== "object" || value === null) continue;
+    const timing = value as { startTime?: unknown; endTime?: unknown };
+    const startTime = timing.startTime;
+    if (typeof startTime !== "number" || !Number.isFinite(startTime) || startTime < 0) continue;
+    const endTime = timing.endTime;
+    if (endTime !== undefined && (typeof endTime !== "number" || !Number.isFinite(endTime) || endTime <= startTime)) continue;
+    timings.set(turn as number, {
+      startTime,
+      ...(endTime === undefined ? {} : { endTime }),
+    });
+  }
+  entry.turnTimings = timings;
 }
 
 /** Reuse DSH's immutable snapshot. The table parses it only when read. */

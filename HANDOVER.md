@@ -30,8 +30,8 @@
 | 远端 | `git@github.com:fsk2142/dsh-token-tps-stats.git` |
 | 版本 | `1.0.1` |
 | `tsc` | 干净 |
-| 单测 | **223 条全绿**（`session-store` 37 / `step-history` 21 / `chart-store` 17 / `format` 17 / `tps-meter` 13 / `panel-metrics` 15 / `turn-details` 13 / `chart-axis` 10 / `chart-geometry` 10 / `install` 10 / `panel-placement` 10 / `help` 8 / `label` 7 / `live-tps` 6 / `live-spike` 5 / `panel-help-placement` 5 / `turn-details-render` 5 / `live-fallback` 4 / `dom-attributes` 3 / `step-grid` 3 / `tps-history` 3 / `replay-regression` 1），另有 `pnpm test:bundle` 用带 `this` 语义的假宿主跑构建产物 |
-| 构建 | 成功（`lib/client.js` **33.0 KB**（minify 后）/ gzip 11.9 KB；`lib/index.js` 1.7 KB） |
+| 单测 | **229 条全绿**（`session-store` 38 / `step-history` 21 / `chart-store` 17 / `format` 17 / `turn-details` 17 / `panel-metrics` 15 / `tps-meter` 13 / `chart-axis` 10 / `chart-geometry` 10 / `install` 10 / `panel-placement` 10 / `help` 8 / `label` 7 / `turn-details-render` 6 / `live-tps` 6 / `live-spike` 5 / `panel-help-placement` 5 / `live-fallback` 4 / `dom-attributes` 3 / `step-grid` 3 / `tps-history` 3 / `replay-regression` 1），另有 `pnpm test:bundle` 用带 `this` 语义的假宿主跑构建产物 |
+| 构建 | 成功（`lib/client.js` **34.4 KB**（minify 后）/ gzip 12.3 KB；`lib/index.js` 1.7 KB） |
 | 装进 profile | **已装**（`desktop` profile，`link:` 到本目录；宿主读的就是 `lib/client.js`） |
 | 真机槽位 | `conversation.composer.dock` → `token-tps-stats`（order -1）；`shell.overlay` → `token-tps-stats-chart` |
 
@@ -39,13 +39,13 @@
 
 | 文件 | 职责 | 改动风险 |
 | --- | --- | --- |
-| `src/client/session-store.ts` | **每会话一份状态**：按 `sessionId` 认领 `{meter, history, steps, baseline, sampledAt, runningTurn, runningStep, runningTokens, nodes, liveEvents, lastLiveAt}`；`pushSnapshot` 吃 `legacy.partial` 做差分与运行中估算，`pushNodes` 保存 nodes 并刷新步账。live 正常时快照让位，1.2 秒无 live 事件则快照接管 | 中（有单测） |
+| `src/client/session-store.ts` | **每会话一份状态**：按 `sessionId` 认领 `{meter, history, steps, baseline, sampledAt, runningTurn, runningStep, runningTokens, nodes, turnTimings, liveEvents, lastLiveAt}`；`pushSnapshot` 吃 `legacy.partial` 做差分与运行中估算，`pushNodes` 保存 nodes 并刷新步账，`pushTurnTimings` 保存轮次开始/结束。live 正常时快照让位，1.2 秒无 live 事件则快照接管 | 中（有单测） |
 | `src/client/label.ts` | **胶囊那行字**：固定前缀 + 定宽数字 + 单位，以及对应的无障碍文案（只有「输出文本的速度」一个语义） | 低（有单测） |
 | `src/client/step-history.ts` | **每步的一行账**（弹窗第二个页签）：按 `turn:step` 收真实 `usage`；速度 = 输出 token ÷（`completedTime − stepStartTime`），含首包等待与重试，不含工具执行；保留最近 40 步，运行中只显示估算输出 | 低（有单测） |
 | `src/client/progress.ts` | **差分**：块文本提取（只认 text/reasoning）、`newTextSince`（无基线/换流/重试一律不产字符，幂等） | 低（有单测） |
 | `src/client/tps-meter.ts` | **计算核心**：字符→token 换算、**两级各 650ms 级联指数滤波**（`push(tokens, at, receivedAt, from)`），读数不推进已提交状态。纯函数 + 有状态累加器，**不碰 React** | 低（有单测） |
 | `src/client/session-events.ts` | **借用宿主事件流**：`sessions.binding(id).eventSource` → 只消费 `append` 的 `assistant/live-chunk` 正文/思考增量；同一回调合并成一批，带真实起止时间，避免逐 chunk 点冲激叠加 | 中（依赖宿主私有 API，有回退） |
-| `src/client/turn-details.ts` | **当前轮次纯聚合器**：从 nodes + 运行中步骤汇总流式/端到端速度、TTFT/生成/总计、输出 token、缓存率与思维链比例；缺头/缺时间/倒挂时返回 `—` 所需的上游值 | 低（纯函数，有单测） |
+| `src/client/turn-details.ts` | **当前轮次纯聚合器**：从 nodes + running + turnTimings 汇总流式/端到端速度、TTFT/生成/总计、输出 token、缓存率与思维链比例；缺头、字段不齐、比例矛盾或时间倒挂时返回未知 | 低（纯函数，有单测） |
 | `src/client/tps-history.ts` | **折线图历史**：只保留 5 分钟；每秒保留一个峰值并用它的真实时刻，「平均」按时间加权（含空闲） | 低（有单测） |
 | `src/client/chart-geometry.ts` | **折线几何**：`axisScale`（格宽只走 50 的倍数，108→150）、按真实时刻定位的 `positions`、**保形平滑曲线**（单调三次 Hermite → 贝塞尔，不过冲） | 低（有单测） |
 | `src/client/chart-store.ts` | **弹层开关状态**：胶囊与弹层不共享 React 树，靠它交换「开没开 / 锚点 / 时长 / 步数 / **看哪个会话** / 三个页签」；还存胶囊 DOM 元素供读当前矩形与关闭后恢复焦点 | 低（有单测） |

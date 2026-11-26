@@ -66,6 +66,7 @@ import {
   PANEL_PADDING_TOP,
   PANEL_PADDING_X,
   PANEL_WIDTH,
+  detailsBodyHeight,
 } from "./panel-metrics";
 import { panelMaxHeight, panelMinHeightFor, panelPlacement } from "./panel-placement";
 import type { SessionStream } from "./session-store";
@@ -402,6 +403,7 @@ function renderPanel(
         runningTokens: stream?.runningTokens ?? 0,
         liveSpeed: stream?.meter.reading(now) ?? 0,
         now,
+        turnTimings: stream?.turnTimings,
       })
     : undefined;
   const placement = panelPlacement(anchor, state.tab, state.steps, undefined, help.helpOpen);
@@ -554,7 +556,7 @@ export function renderTurnDetails(details: TurnDetails | undefined): ReactElemen
   ];
   return createElement(
     "div",
-    { style: { display: "flex", flexDirection: "column", gap: "8px", width: "100%", flex: "1" } },
+    { style: { display: "flex", flexDirection: "column", gap: "8px", width: "100%", flex: "1", minHeight: `${detailsBodyHeight()}px` } },
     createElement(
       "span",
       { style: { fontSize: "12px", lineHeight: "17px", color: INK_STRONG, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } },

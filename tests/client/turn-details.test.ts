@@ -94,6 +94,7 @@ describe("当前轮次明细：结算汇总", () => {
     const noFirst = node(61, 1, { outputTokens: 600 }, { stepStartTime: 1_000, firstTokenTime: null, completedTime: 5_000 });
     const details = turnDetailsOf({ nodes: [noFirst, second], now: 10_000, runningTokens: 0, liveSpeed: 0 });
     expect(details).toMatchObject({ totalMs: 8_000, outputTokens: 1_000, endToEndSpeed: 125 });
+    expect(details?.ttftMs).toBeUndefined();
     expect(details?.generationMs).toBeUndefined();
     expect(details?.streamSpeed).toBeUndefined();
   });
@@ -126,6 +127,8 @@ describe("当前轮次明细：运行中", () => {
       streamSpeed: 239.2,
       endToEndSpeed: 850 / 6,
     });
+    // 运行中步骤的生成时长尚未结算，不能拿已结算步骤的部分耗时冒充完整值。
+    expect(details?.generationMs).toBeUndefined();
   });
 
   it("运行中步骤已有结算节点时忽略估算，不重复计步数或 token", () => {
@@ -137,6 +140,54 @@ describe("当前轮次明细：运行中", () => {
       now: 10_000,
     });
     expect(details).toMatchObject({ steps: 2, running: false, outputTokens: 1_000, streamSpeed: 200 });
+  });
+
+  it("运行中步骤与已结算步骤步号交错时，按节点是否存在取并集", () => {
+    const third = node(
+      61,
+      3,
+      { outputTokens: 100, reasoningTokens: 20, cacheReadTokens: 300, inputTokens: 50, totalTokens: 450 },
+      { stepStartTime: 10_000, firstTokenTime: 10_500, completedTime: 11_000 },
+    );
+    const details = turnDetailsOf({
+      nodes: [first, third],
+      running: { turn: 61, step: 2 },
+      runningTokens: 50,
+      liveSpeed: 100,
+      now: 9_000,
+    });
+    expect(details).toMatchObject({ steps: 3, running: true, outputTokens: 750, streamSpeed: 100 });
+  });
+
+  it("工具执行期间没有 partial，但 turnTimings 未结束仍保持运行中并推进总计", () => {
+    const details = turnDetailsOf({
+      nodes: [first, second],
+      turnTimings: new Map([[61, { startTime: 1_000 }]]),
+      now: 12_000,
+      runningTokens: 0,
+      liveSpeed: 0,
+    });
+    expect(details).toMatchObject({
+      turn: 61,
+      steps: 2,
+      running: true,
+      totalMs: 11_000,
+      generationMs: 5_000,
+      outputTokens: 1_000,
+      streamSpeed: 200,
+      endToEndSpeed: 1_000 / 11,
+    });
+  });
+
+  it("turnTimings 有结束时间时，总计使用轮次结束时刻", () => {
+    const details = turnDetailsOf({
+      nodes: [first, second],
+      turnTimings: new Map([[61, { startTime: 1_000, endTime: 9_500 }]]),
+      now: 12_000,
+      runningTokens: 0,
+      liveSpeed: 0,
+    });
+    expect(details).toMatchObject({ running: false, totalMs: 8_500, endToEndSpeed: 1_000 / 8.5 });
   });
 
   it("新轮次只有运行中步骤时也能显示轮次与估算输出，但总计未知", () => {
@@ -158,15 +209,27 @@ describe("当前轮次明细：缺失与非法输入", () => {
     expect(turnDetailsOf({ nodes: [null, {}, { kind: "tool", turn: 1, step: 1 }], now: 0, runningTokens: 0, liveSpeed: 0 })).toBeUndefined();
   });
 
-  it("缓存率只汇总能确定提示总量的步骤；完全不可确定时显示未知", () => {
-    const invalidCache = node(61, 1, { outputTokens: 10, cacheReadTokens: 100, totalTokens: 50 }, { stepStartTime: 1, firstTokenTime: 2, completedTime: 3 });
-    const details = turnDetailsOf({ nodes: [invalidCache], now: 4, runningTokens: 0, liveSpeed: 0 });
-    expect(details?.cacheHitRatio).toBeUndefined();
+  it("缓存率在任一已结算步骤字段不齐或分母矛盾时显示未知", () => {
+    const missingCache = node(61, 2, { outputTokens: 400, inputTokens: 200, totalTokens: 2_400 }, { stepStartTime: 6_000, firstTokenTime: 7_000, completedTime: 9_000 });
+    expect(turnDetailsOf({ nodes: [first, missingCache], now: 10_000, runningTokens: 0, liveSpeed: 0 })?.cacheHitRatio).toBeUndefined();
+
+    const missingWrite = node(61, 1, { outputTokens: 100, cacheReadTokens: 100, inputTokens: 100 }, { stepStartTime: 1_000, firstTokenTime: 2_000, completedTime: 3_000 });
+    expect(turnDetailsOf({ nodes: [missingWrite], now: 4_000, runningTokens: 0, liveSpeed: 0 })?.cacheHitRatio).toBeUndefined();
   });
 
-  it("思维链比例只汇总字段齐全的步骤；完全不可确定时显示未知", () => {
-    const noReasoning = node(61, 1, { outputTokens: 100 }, { stepStartTime: 1, firstTokenTime: 2, completedTime: 3 });
-    const details = turnDetailsOf({ nodes: [noReasoning], now: 4, runningTokens: 0, liveSpeed: 0 });
-    expect(details?.reasoningRatio).toBeUndefined();
+  it("思维链比例要求所有正输出步骤字段齐全且比例合法", () => {
+    const missingReasoning = node(61, 2, { outputTokens: 400, cacheReadTokens: 1_800, inputTokens: 200, totalTokens: 2_400 }, { stepStartTime: 6_000, firstTokenTime: 7_000, completedTime: 9_000 });
+    expect(turnDetailsOf({ nodes: [first, missingReasoning], now: 10_000, runningTokens: 0, liveSpeed: 0 })?.reasoningRatio).toBeUndefined();
+
+    const impossible = node(61, 1, { outputTokens: 100, reasoningTokens: 150 }, { stepStartTime: 1_000, firstTokenTime: 2_000, completedTime: 3_000 });
+    expect(turnDetailsOf({ nodes: [impossible], now: 4_000, runningTokens: 0, liveSpeed: 0 })?.reasoningRatio).toBeUndefined();
+  });
+
+  it("步骤间时间倒挂或重叠时，总计与端到端显示未知", () => {
+    const lateFirst = node(61, 1, { outputTokens: 600 }, { stepStartTime: 1_000, firstTokenTime: 2_000, completedTime: 10_000 });
+    const details = turnDetailsOf({ nodes: [lateFirst, second], now: 12_000, runningTokens: 0, liveSpeed: 0 });
+    expect(details?.generationMs).toBe(10_000);
+    expect(details?.totalMs).toBeUndefined();
+    expect(details?.endToEndSpeed).toBeUndefined();
   });
 });

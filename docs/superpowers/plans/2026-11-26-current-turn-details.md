@@ -289,4 +289,4 @@ git push origin master:main
 
 - [ ] **Step 5: 同步本地安装**
 
-确认 `desktop` profile 仍是 `link:C:/Work/dsh-plug-in/dsh-token-tps-stats`；重建后核对宿主服务的 `lib/client.js` 与本地构建一致，并提示用户刷新页面。
+确认 `desktop` profile 仍是 `link:<repo>`；重建后核对宿主服务的 `lib/client.js` 与本地构建一致，并提示用户刷新页面。

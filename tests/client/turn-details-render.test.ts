@@ -76,6 +76,12 @@ describe("本轮细则：纯渲染", () => {
     expect(textOf(tree)).toContain("正文/工具 68%");
   });
 
+  it("明细内容显式占用 190px 最小高度，与定位模型一致", () => {
+    const tree = renderTurnDetails(details);
+    const style = (tree as { props?: { style?: { minHeight?: unknown } } }).props?.style;
+    expect(style?.minHeight).toBe("190px");
+  });
+
   it("没有可汇总数据时显示空态", () => {
     expect(textOf(renderTurnDetails(undefined))).toContain("当前轮次还没有可汇总的数据");
   });

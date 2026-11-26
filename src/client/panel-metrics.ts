@@ -245,7 +245,7 @@ export function panelMinHeight(): number {
  * `line-height: 16px`，条目之间 `gap: 1px`，每节之间 `gap: 6px`，
  * 整块末尾 `marginBottom: 8px`；每节有一个标题行（同样 16px）。
  *
- * 当前 `help.ts` 是 3 节 18 条：3 × 16 + 18 × 16 + 2 × 6 + 18 + 8 = **374px**。
+ * 当前 `help.ts` 是 3 节 20 条：3 × 16 + 20 × 16 + 2 × 6 + 20 + 8 = **408px**。
  * 文案变化时以 `HELP_SIZE` 与 `helpBodyHeight()` 的实际结果为准，不写死这个对照值。
  * @param sections - 节数。
  * @param lines - 条目总数。
@@ -280,7 +280,7 @@ export function helpBodyHeight(sections: number, lines: number): number {
  * ## `helpOpen` 也必须算进去（2026-11-14 第二轮）
  *
  * `?` 展开后 `renderHelp()` 会在内容流里插进三节共 18 条说明 —— 面板一下长高
- * 约 374px。面板是**靠 `translateY(-100%)` 向上长**的，所以变高等于**顶边往上
+ * 约 408px。面板是**靠 `translateY(-100%)` 向上长**的，所以变高等于**顶边往上
  * 跑**：不把这段算进定位，展开说明就会把表头和 `x` 顶出视口。
  * @param tab - 当前页签。
  * @param steps - 步数页当前档位（时间页忽略）。

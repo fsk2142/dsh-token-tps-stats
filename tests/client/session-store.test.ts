@@ -6,7 +6,7 @@
 import { describe, expect, it } from "vitest";
 
 import { newTextSince, streamKeyOf, textOfBlocks, type ProgressBaseline } from "../../src/client/progress";
-import { createSessionStream, pushNodes, pushSnapshot, resetSnapshotBaseline } from "../../src/client/session-store";
+import { createSessionStream, pushNodes, pushSnapshot, pushTurnTimings, resetSnapshotBaseline } from "../../src/client/session-store";
 
 describe("块文本提取", () => {
   it("只认 text 与 reasoning（工具参数不算输出速度）", () => {
@@ -323,6 +323,23 @@ describe("当前轮次明细：SessionStream 接线", () => {
     expect(entry.runningStep).toBeUndefined();
     expect(entry.runningTokens).toBeUndefined();
     expect(entry.nodes).toBe(nodes);
+  });
+
+  it("保存合法 turnTimings，并过滤倒挂或非法时间", () => {
+    const entry = createSessionStream("A");
+    pushTurnTimings(entry, new Map([
+      [3, { startTime: 1_000 }],
+      [4, { startTime: 2_000, endTime: 5_000 }],
+      [5, { startTime: 9_000, endTime: 8_000 }],
+      [6, { startTime: Number.NaN }],
+    ]));
+    expect(entry.turnTimings?.get(3)).toEqual({ startTime: 1_000 });
+    expect(entry.turnTimings?.get(4)).toEqual({ startTime: 2_000, endTime: 5_000 });
+    expect(entry.turnTimings?.has(5)).toBe(false);
+    expect(entry.turnTimings?.has(6)).toBe(false);
+
+    pushTurnTimings(entry, null);
+    expect(entry.turnTimings).toBeUndefined();
   });
 });
 

@@ -84,17 +84,17 @@
 
 ### 当前轮次与步数
 
-- 当前轮次 = `legacy.partial.turn` 与 `legacy.nodes` 中有效 assistant 节点最大轮次中的较大者。
-- 步数 = 当前轮次内去重后的 assistant 步骤数，加上尚未出现在 nodes 中的运行中 `partial.step`。
+- 当前轮次 = `legacy.partial.turn`、`legacy.nodes` 中有效 assistant 节点最大轮次与 `legacy.turnTimings` 最大轮次中的较大者。
+- 步数 = 当前轮次内去重后的 assistant 步骤数，加上尚未出现在 nodes 中的运行中 `partial.step`；步号交错也按“节点是否存在”判断。
 - 同一 `turn:step` 的重复或修订节点只计一次，采用最新出现的节点。
 
 ### 时间
 
-- `turnStart`：当前轮次所有有效节点中最小的 `stepStartTime`。
-- `turnEnd`：当前轮次已结束节点的最大 `completedTime`；若当前轮次仍在运行，则取渲染时的 `now`。
-- `总计`：`turnEnd − turnStart`。起点缺失时不显示。
-- `TTFT`：当前轮次最早一个有效步骤的 `firstTokenTime − stepStartTime`。首 token 缺失或倒挂时显示 `—`。
-- `生成`：当前轮次各有效步骤的 `completedTime − firstTokenTime` 之和。工具-only 的零输出步骤不贡献生成耗时；有输出但缺少有效生成时间的步骤会使汇总显示 `—`，避免分子分母不匹配。
+- `turnStart`：优先取 `legacy.turnTimings` 的 `startTime`；缺失时取当前轮次有效节点中最小的 `stepStartTime`。
+- `turnEnd`：优先取 `legacy.turnTimings` 的 `endTime`；轮次仍在运行时取渲染时的 `now`，因此工具执行期间也会持续推进。
+- `总计`：`turnEnd − turnStart`。缺头、任一步骤时间缺失、步骤间倒挂/重叠或终点早于起点时不显示。
+- `TTFT`：只取当前轮次最早步骤的 `firstTokenTime − stepStartTime`；最早步骤首 token 缺失或倒挂时显示 `—`，不跳到后续步骤。
+- `生成`：当前轮次各有效步骤的 `completedTime − firstTokenTime` 之和。工具-only 的零输出步骤不贡献生成耗时；有输出但缺少有效生成时间、已结算步骤缺输出用量，或运行中步骤已有估算输出时，汇总显示 `—`。
 
 ### 速度
 
@@ -106,14 +106,14 @@
 ### 用量与比例
 
 - `本轮输出`：已结算节点的 `outputTokens` 之和，加上运行中步骤的现有估算 token。
-- `缓存率`：只汇总能确定提示总量的已结算步骤；`Σ cacheReadTokens ÷ Σ promptTokens`。沿用现有命中率校验，不完整时显示 `—`。
-- `输出比例`：`reasoningTokens ÷ outputTokens` 为思维链，其余为正文/工具。只汇总两者都有效的已结算步骤；数据缺失时显示 `—`。
+- `缓存率`：`Σ cacheReadTokens ÷ Σ promptTokens`。提示总量可由 `totalTokens − outputTokens` 确定，或三个 prompt 桶齐全时确定；任一已结算步骤字段不齐或分母矛盾时整体显示 `—`。
+- `输出比例`：`Σ reasoningTokens ÷ Σ outputTokens` 为思维链，其余为正文/工具。所有正输出步骤必须同时具备两项且思维链不超过输出；零输出步骤不参与分母，未知输出不能跳过。
 - 比例条必须同时显示文字百分比，不能只靠颜色表达。
 
 ## 实现边界
 
-- 新增纯聚合模块（建议 `turn-details.ts`），输入 nodes / partial / runningTokens / now，输出展示模型；不碰 React，便于完整单测。
-- `SessionStream` 增加当前 nodes 引用与运行中 turn/step 信息，沿用现有 `runningTokens`，不重复计数。
+- 新增纯聚合模块 `turn-details.ts`，输入 nodes / running / runningTokens / liveSpeed / now / turnTimings，输出展示模型；不碰 React，便于完整单测。
+- `SessionStream` 增加当前 nodes 引用、运行中 turn/step 信息与 `turnTimings`，沿用现有 `runningTokens`，不重复计数。
 - `ChartTab` 增加 `details`，头部与状态测试同步扩展。
 - 明细页打开时每 500ms 重画一次，让运行中的流式读数、端到端估算与耗时继续更新；结算后随 nodes 更新。
 - `panel-metrics.ts` 增加明细页高度；明细页与现有两页共享最小外高，定位与滚动逻辑不变。
@@ -128,7 +128,7 @@
 - 缓存率与思维链比例的聚合、缺失字段与倒挂时间。
 - 分页缺少最早步骤时显示 `—`。
 - 运行中使用估算、结算后切换为真实用量。
-- 第三个页签状态、面板高度、帮助文案与既有 195 条测试保持全绿。
+- 第三个页签状态、面板高度、帮助文案与既有测试保持全绿；审查后总测试数为 229 条。
 
 ## 验收
 
