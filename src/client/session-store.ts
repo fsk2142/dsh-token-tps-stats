@@ -23,6 +23,11 @@ export interface SessionStream {
   sampledAt?: number;
   lastStep?: string;
   runningTokens?: number;
+  /** 当前运行中的轮次与步骤；供「本轮细则」聚合使用。 */
+  runningTurn?: number;
+  runningStep?: number;
+  /** 宿主最近一次提供的完整 legacy.nodes 引用；仅供当前轮次聚合读取。 */
+  nodes?: readonly unknown[];
   /** live 订阅是否已建立（只用于「页面隐藏时要不要推快照」这类判断）。 */
   liveEvents: boolean;
   /**
@@ -115,6 +120,8 @@ export function resetSnapshotBaseline(entry: SessionStream): void {
   entry.sampledAt = undefined;
   entry.lastStep = undefined;
   entry.runningTokens = undefined;
+  entry.runningTurn = undefined;
+  entry.runningStep = undefined;
 }
 
 function estimateTokens(pieces: readonly (string | undefined)[]): number {
@@ -131,11 +138,15 @@ export function pushSnapshot(entry: SessionStream, partial: unknown, at: number)
   if (typeof shape?.turn !== "number" || typeof shape.step !== "number") {
     entry.baseline = undefined;
     entry.runningTokens = undefined;
+    entry.runningTurn = undefined;
+    entry.runningStep = undefined;
     entry.steps.clearRunning();
     return false;
   }
 
   const stream = streamKeyOf(shape.turn, shape.step);
+  entry.runningTurn = shape.turn;
+  entry.runningStep = shape.step;
   // Only a known boundary makes the first visible text new. A reappearing retry may carry old text.
   const freshStep = previousAt !== undefined && entry.lastStep !== stream;
   const { pieces, baseline, appendOnly } = newTextSince(previous, shape.blocks, stream, freshStep);
@@ -167,5 +178,10 @@ export function pushSnapshot(entry: SessionStream, partial: unknown, at: number)
 
 /** Reuse DSH's immutable snapshot. The table parses it only when read. */
 export function pushNodes(entry: SessionStream, nodes: unknown): void {
-  if (Array.isArray(nodes)) entry.steps.setCompleted(nodes);
+  if (Array.isArray(nodes)) {
+    entry.nodes = nodes;
+    entry.steps.setCompleted(nodes);
+  } else {
+    entry.nodes = undefined;
+  }
 }

@@ -31,8 +31,8 @@ export interface ChartAnchor {
   readonly bottom: number;
 }
 
-/** 弹层当前在看哪一块（左上角的两个标签页）。 */
-export type ChartTab = "time" | "steps";
+/** 弹层当前在看哪一块（左上角的三个标签页）。 */
+export type ChartTab = "time" | "steps" | "details";
 
 /** 默认标签页：实时速度。 */
 export const CHART_DEFAULT_TAB: ChartTab = "time";
@@ -174,8 +174,8 @@ export function closeChart(): void {
 }
 
 /**
- * 换标签页（左上角的两个页签）。
- * @param tab - 实时速度 / 每步平均。
+ * 换标签页（左上角的三个页签）。
+ * @param tab - 实时速度 / 每步平均 / 本轮细则。
  */
 export function setChartTab(tab: ChartTab): void {
   if (state.tab === tab) return;

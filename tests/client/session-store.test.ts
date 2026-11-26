@@ -6,7 +6,7 @@
 import { describe, expect, it } from "vitest";
 
 import { newTextSince, streamKeyOf, textOfBlocks, type ProgressBaseline } from "../../src/client/progress";
-import { createSessionStream, pushNodes, pushSnapshot } from "../../src/client/session-store";
+import { createSessionStream, pushNodes, pushSnapshot, resetSnapshotBaseline } from "../../src/client/session-store";
 
 describe("块文本提取", () => {
   it("只认 text 与 reasoning（工具参数不算输出速度）", () => {
@@ -283,6 +283,46 @@ describe("进行中的输出来自当前快照", () => {
     expect(entry.steps.rows(1)[0]?.outputTokens).toBe(10);
     pushSnapshot(entry, snapshot("替换"), 1_400);
     expect(entry.steps.rows(1)[0]?.outputTokens).toBe(2);
+  });
+});
+
+describe("当前轮次明细：SessionStream 接线", () => {
+  it("保存 nodes 引用、运行中 turn/step 与估算 token", () => {
+    const entry = createSessionStream("A");
+    const nodes = [{ kind: "assistant", turn: 3, step: 1, usage: { outputTokens: 10 } }];
+    pushNodes(entry, nodes);
+    pushSnapshot(entry, { turn: 3, step: 2, blocks: [{ kind: "text", text: "abc" }] }, 1_000);
+
+    expect(entry.nodes).toBe(nodes);
+    expect(entry.runningTurn).toBe(3);
+    expect(entry.runningStep).toBe(2);
+    expect(entry.runningTokens).toBeGreaterThan(0);
+  });
+
+  it("非法 partial 清掉运行中字段，但不清已保存的 nodes", () => {
+    const entry = createSessionStream("A");
+    const nodes = [{ kind: "assistant", turn: 3, step: 1, usage: { outputTokens: 10 } }];
+    pushNodes(entry, nodes);
+    pushSnapshot(entry, { turn: 3, step: 2, blocks: [{ kind: "text", text: "abc" }] }, 1_000);
+
+    expect(pushSnapshot(entry, null, 2_000)).toBe(false);
+    expect(entry.runningTurn).toBeUndefined();
+    expect(entry.runningStep).toBeUndefined();
+    expect(entry.runningTokens).toBeUndefined();
+    expect(entry.nodes).toBe(nodes);
+  });
+
+  it("resetSnapshotBaseline 清运行中字段但保留历史 nodes", () => {
+    const entry = createSessionStream("A");
+    const nodes = [{ kind: "assistant", turn: 3, step: 1, usage: { outputTokens: 10 } }];
+    pushNodes(entry, nodes);
+    pushSnapshot(entry, { turn: 3, step: 2, blocks: [{ kind: "text", text: "abc" }] }, 1_000);
+
+    resetSnapshotBaseline(entry);
+    expect(entry.runningTurn).toBeUndefined();
+    expect(entry.runningStep).toBeUndefined();
+    expect(entry.runningTokens).toBeUndefined();
+    expect(entry.nodes).toBe(nodes);
   });
 });
 

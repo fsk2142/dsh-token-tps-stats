@@ -277,12 +277,13 @@ export function helpBodyHeight(sections: number, lines: number): number {
  * @returns 像素。
  */
 export function panelOuterHeight(
-  tab: "time" | "steps",
+  tab: "time" | "steps" | "details",
   steps: number = PANEL_REFERENCE_STEPS,
   helpOpen = false,
   helpSize: { sections: number; lines: number } = HELP_SIZE,
 ): number {
-  const content = tab === "time" ? timeBodyHeight() : stepsBodyHeight(Math.max(steps, PANEL_REFERENCE_STEPS));
+  // Task 3 会给 details 专用高度；在它接入前，details 暂按时间页的 190px 内容区计算。
+  const content = tab === "steps" ? stepsBodyHeight(Math.max(steps, PANEL_REFERENCE_STEPS)) : timeBodyHeight();
   return (
     PANEL_PADDING_TOP +
     HEADER_HEIGHT +
