@@ -16,8 +16,9 @@
 ◷ 实时输出速度（TPS）：42 tok/s   ◷ 93 轮 4047 步 · 148 tok/s   ⛁ 1159M tok · …
 ```
 
-**点一下胶囊** → 在它正上方弹出图表，左上角两个页签：**实时速度**（1/3/5 分钟折线）
-与**每步输出**（5/10/20 步的表格：读取 · 输入 · 输出 · 命中 · 速度）。
+**点一下胶囊** → 在它正上方弹出面板，左上角三个页签：**实时速度**（1/3/5 分钟折线）、
+**每步输出**（5/10/20 步的表格：读取 · 输入 · 输出 · 命中 · 速度）与
+**本轮细则**（当前轮次的流式/端到端速度、TTFT/生成/总计、输出 token、缓存率与输出比例）。
 
 它**只做这一件事**：不读账号、不读额度、不碰任何厂商配置、不发网络请求。
 
@@ -29,8 +30,8 @@
 | 远端 | `git@github.com:fsk2142/dsh-token-tps-stats.git` |
 | 版本 | `1.0.1` |
 | `tsc` | 干净 |
-| 单测 | **195 条全绿**（`session-store` 34 / `step-history` 21 / `chart-store` 15 / `format` 15 / `tps-meter` 13 / `panel-metrics` 13 / `chart-axis` 10 / `chart-geometry` 10 / `install` 10 / `panel-placement` 10 / `help` 7 / `label` 7 / `live-tps` 6 / `live-spike` 5 / `panel-help-placement` 5 / `live-fallback` 4 / `dom-attributes` 3 / `step-grid` 3 / `tps-history` 3 / `replay-regression` 1），另有 `pnpm test:bundle` 用带 `this` 语义的假宿主跑构建产物 |
-| 构建 | 成功（`lib/client.js` **27.4 KB**（minify 后）/ gzip 10.3 KB；`lib/index.js` 1.7 KB） |
+| 单测 | **223 条全绿**（`session-store` 37 / `step-history` 21 / `chart-store` 17 / `format` 17 / `tps-meter` 13 / `panel-metrics` 15 / `turn-details` 13 / `chart-axis` 10 / `chart-geometry` 10 / `install` 10 / `panel-placement` 10 / `help` 8 / `label` 7 / `live-tps` 6 / `live-spike` 5 / `panel-help-placement` 5 / `turn-details-render` 5 / `live-fallback` 4 / `dom-attributes` 3 / `step-grid` 3 / `tps-history` 3 / `replay-regression` 1），另有 `pnpm test:bundle` 用带 `this` 语义的假宿主跑构建产物 |
+| 构建 | 成功（`lib/client.js` **33.0 KB**（minify 后）/ gzip 11.9 KB；`lib/index.js` 1.7 KB） |
 | 装进 profile | **已装**（`desktop` profile，`link:` 到本目录；宿主读的就是 `lib/client.js`） |
 | 真机槽位 | `conversation.composer.dock` → `token-tps-stats`（order -1）；`shell.overlay` → `token-tps-stats-chart` |
 
@@ -38,21 +39,23 @@
 
 | 文件 | 职责 | 改动风险 |
 | --- | --- | --- |
-| `src/client/session-store.ts` | **每会话一份状态**：按 `sessionId` 认领 `{meter, history, steps, baseline, sampledAt, nodesSeen}`；`pushSnapshot` 吃一拍 `legacy.partial`（差分 + 摊开 + 累加），`pushNodes` 把已完成节点的真实 `usage` 记进步账（**同数组引用直接跳过**，省掉每帧重扫）。**这是「各算各的」的关键文件** | 中（有单测） |
+| `src/client/session-store.ts` | **每会话一份状态**：按 `sessionId` 认领 `{meter, history, steps, baseline, sampledAt, runningTurn, runningStep, runningTokens, nodes, liveEvents, lastLiveAt}`；`pushSnapshot` 吃 `legacy.partial` 做差分与运行中估算，`pushNodes` 保存 nodes 并刷新步账。live 正常时快照让位，1.2 秒无 live 事件则快照接管 | 中（有单测） |
 | `src/client/label.ts` | **胶囊那行字**：固定前缀 + 定宽数字 + 单位，以及对应的无障碍文案（只有「输出文本的速度」一个语义） | 低（有单测） |
-| `src/client/step-history.ts` | **每步的一行账**（弹窗第二个页签）：按 `turn:step` 收真实 `usage` 与「有字在流」的时长；单次间隔封顶 2 秒、时长下限 500 毫秒，保留最近 40 步。时长拿不到时退回宿主节点的 `timing` | 低（有单测） |
+| `src/client/step-history.ts` | **每步的一行账**（弹窗第二个页签）：按 `turn:step` 收真实 `usage`；速度 = 输出 token ÷（`completedTime − stepStartTime`），含首包等待与重试，不含工具执行；保留最近 40 步，运行中只显示估算输出 | 低（有单测） |
 | `src/client/progress.ts` | **差分**：块文本提取（只认 text/reasoning）、`newTextSince`（无基线/换流/重试一律不产字符，幂等） | 低（有单测） |
 | `src/client/tps-meter.ts` | **计算核心**：字符→token 换算、**两级各 650ms 级联指数滤波**（`push(tokens, at, receivedAt, from)`），读数不推进已提交状态。纯函数 + 有状态累加器，**不碰 React** | 低（有单测） |
-| `src/client/session-events.ts` | **借用宿主事件流**：`sessions.binding(id).eventSource` → 只消费 `append` 的 `assistant/live-chunk` 正文/思考增量，带宿主时间戳 | 中（依赖宿主私有 API，有回退） |
+| `src/client/session-events.ts` | **借用宿主事件流**：`sessions.binding(id).eventSource` → 只消费 `append` 的 `assistant/live-chunk` 正文/思考增量；同一回调合并成一批，带真实起止时间，避免逐 chunk 点冲激叠加 | 中（依赖宿主私有 API，有回退） |
+| `src/client/turn-details.ts` | **当前轮次纯聚合器**：从 nodes + 运行中步骤汇总流式/端到端速度、TTFT/生成/总计、输出 token、缓存率与思维链比例；缺头/缺时间/倒挂时返回 `—` 所需的上游值 | 低（纯函数，有单测） |
 | `src/client/tps-history.ts` | **折线图历史**：只保留 5 分钟；每秒保留一个峰值并用它的真实时刻，「平均」按时间加权（含空闲） | 低（有单测） |
-| `src/client/chart-geometry.ts` | **折线几何**：`axisScale`（阶梯 1/2/5/10/25/50/100/250…，108→150）、`axisTicks`（整数）、**保形平滑曲线**（单调三次 Hermite → 贝塞尔，不过冲） | 低（有单测） |
-| `src/client/chart-store.ts` | **弹层开关状态**：胶囊与弹层不共享 React 树，靠它交换「开没开 / 锚点 / 时长 / **看哪个会话**」；还存胶囊 DOM 元素供读当前矩形 | 低（有单测） |
+| `src/client/chart-geometry.ts` | **折线几何**：`axisScale`（格宽只走 50 的倍数，108→150）、按真实时刻定位的 `positions`、**保形平滑曲线**（单调三次 Hermite → 贝塞尔，不过冲） | 低（有单测） |
+| `src/client/chart-store.ts` | **弹层开关状态**：胶囊与弹层不共享 React 树，靠它交换「开没开 / 锚点 / 时长 / 步数 / **看哪个会话** / 三个页签」；还存胶囊 DOM 元素供读当前矩形与关闭后恢复焦点 | 低（有单测） |
 | `src/client/styles.ts` | **共享排版与表面**：官方胶囊那套字号/行高变量、弹层的白底 + elevation 阴影、文字与折线同色令牌 | 低 |
-| `src/client/format.ts` | `formatRate`（**一律取整**）、`formatRateWithUnit`（**带 ` tok/s`**，单位只此一处定义）、`formatTokens`（千分位）、`formatPercent` / `formatRatio`（百分比） | 低（有单测） |
-| `src/client/panel-metrics.ts` | **弹层的高度账**：两页所有加数（行高 / 内边距 / 按钮高）都由这里推出。`panelContentHeight()` 取两页较高者、`panelMinHeight()` 挂到面板的 `minHeight` —— 矮的那页被撑高，所以「实时速度」与「每步平均 5 步」同高（删掉常驻提示后是时间页更高，步数页留 22px 底部空白） | 低（有单测） |
-| `src/client/help.ts` | **口径说明的内容**：`?` 按钮点开的全部文字（两节，每节 3~4 条），以及按钮的无障碍文案。写成数据而不是 JSX，单测才能断言「五个列名都解释到了」 | 低（有单测） |
-| `src/client/tps-pill.ts` | **胶囊**：官方同款内联样式 + 仪表图标 + 点开弹层（带上**本会话**那份状态）+ **定宽数字**；数据从 `useChat` 槽位属性读 | 中（样式改动要靠真机看） |
-| `src/client/tps-chart.ts` | **弹层**：`shell.overlay` + `position: fixed`，左上角两个页签（实时速度折线 / 每步输出表格）+ 档位切换 + Esc/点外面关闭；数据来自 `chart-store` 里那份会话状态 | 中 |
+| `src/client/format.ts` | `formatRate`（**一律取整**）、`formatRateWithUnit`（**带 ` tok/s`**）、`formatTokens`（千分位）、`formatRatio`（百分比，缓存率两位小数）、`formatDuration`（毫秒转秒，两位小数） | 低（有单测） |
+| `src/client/panel-metrics.ts` | **弹层的高度账**：三个页签的加数（行高 / 内边距 / 按钮高 / 帮助高度）都由这里推出。`panelMinHeight()` 给三页共同外高，`panelOuterHeight(tab, steps, helpOpen)` 给定位用真实外高 | 低（有单测） |
+| `src/client/panel-placement.ts` | **弹层定位纯函数**：按真实外高决定上方/下方，夹在视口内；`panelMaxHeight` 与 `panelMinHeightFor` 处理矮窗口内部滚动 | 低（有单测） |
+| `src/client/help.ts` | **口径说明的内容**：`?` 按钮点开的三节文字（实时速度 / 每步平均 / 本轮细则），以及按钮的无障碍文案。写成数据而不是 JSX，单测才能断言列名、速度与本轮口径 | 低（有单测） |
+| `src/client/tps-pill.ts` | **胶囊**：官方同款内联样式 + 仪表图标 + 点开弹层（带上**本会话**那份状态）+ **定宽数字**；live 事件优先，`useChat` 快照回退 | 中（样式改动要靠真机看） |
+| `src/client/tps-chart.ts` | **弹层**：`shell.overlay` + `position: fixed`，左上角三个页签（实时速度折线 / 每步输出表格 / 本轮细则）+ 档位切换 + Esc/点外面关闭；数据来自 `chart-store` 里那份会话状态 | 中 |
 | `src/client/install.ts` | **注册**：嵌套注入 `slots`，再用 `slots.inject` 等声明提交——**不直接 `register`**（直接注册在重启后会报 `slot "…" is not declared`）；注册胶囊与弹层（**不再注册事件定义**） | **高**（见下面「不能碰的边界」） |
 | `src/client/dom.d.ts` | `window` 的最小手写声明（**只为它**，不引整套 DOM 类型） | 低 |
 | `src/client/react.d.ts` | react 的最小类型声明（宿主提供，本地不装） | 低 |
