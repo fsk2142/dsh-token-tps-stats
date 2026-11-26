@@ -170,7 +170,8 @@ export function turnDetailsOf(input: TurnDetailsInput): TurnDetails | undefined 
   }
 
   const producing = steps.filter((step) => (step.outputTokens ?? 0) > 0);
-  const generationComplete = producing.length > 0 && producing.every((step) =>
+  // 输出未知不等于输出为 0：任一已结算步骤缺 outputTokens 时，生成耗时也不能当作完整值。
+  const generationComplete = completeOutput && producing.length > 0 && producing.every((step) =>
     step.stepStartTime !== undefined &&
     step.firstTokenTime !== undefined &&
     step.completedTime !== undefined &&

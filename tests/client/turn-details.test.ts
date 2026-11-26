@@ -102,6 +102,7 @@ describe("当前轮次明细：结算汇总", () => {
     const noUsage = node(61, 1, undefined, { stepStartTime: 1_000, firstTokenTime: 2_000, completedTime: 5_000 });
     const details = turnDetailsOf({ nodes: [noUsage, second], now: 10_000, runningTokens: 0, liveSpeed: 0 });
     expect(details?.outputTokens).toBeUndefined();
+    expect(details?.generationMs).toBeUndefined();
     expect(details?.streamSpeed).toBeUndefined();
     expect(details?.endToEndSpeed).toBeUndefined();
   });
