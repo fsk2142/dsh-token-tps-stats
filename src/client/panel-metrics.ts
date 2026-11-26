@@ -1,5 +1,5 @@
 /**
- * **弹层两个页签的版面高度**（2026-11-13）。
+ * **弹层三个页签的版面高度**（2026-11-13；2026-11-26 增加本轮细则）。
  *
  * ## 用户要的是什么
  *
@@ -15,13 +15,14 @@
  *
  * ```
  * 时间页：标题 + 副标题 + 折线图 + 档位按钮          （4 个子项 → 3 个 gap）
- * 步数页：标题 + 副标题 + 表头 + N 行 + 档位按钮      （5 个子项 → 4 个 gap）
+ * 步数页：标题 + 表头 + N 行 + 档位按钮              （4 个子项 → 3 个 gap）
+ * 明细页：标题 + 四行指标 + 比例条                    （内容不超过时间页）
  * ```
  *
  * 于是把**折线图的高度**取成「5 行时步数页的自然高度减去其余部分」，两页在
  * 5 步这一档就逐像素相等（{@link PANEL_REFERENCE_STEPS}）。
  *
- * > **2026-11-14 补记**：删掉那句常驻提示之后，两页的自然高度已经**不再相等**
+ * > **2026-11-14 补记**：删掉那句常驻提示之后，时间页与 5 步页的自然高度已经**不再相等**
  * > （时间页 190、步数页 5 步 168），靠的是 `minHeight` 把矮的那页撑高。
  * > 下面 `stepsBodyHeight` 的注释写了这段由来；`tests/client/panel-metrics.test.ts`
  * > 断言的是「5 步这一档 `panelContentHeight(5)` 等于时间页、且大于 `stepsBodyHeight(5)`」。
@@ -44,7 +45,7 @@ import { TPS_STEP_DEFAULT } from "./step-history";
  */
 export const PANEL_WIDTH = 440;
 
-/** 竖向 `gap`（两个页签的列容器都是 `gap: 2px`）。 */
+/** 竖向 `gap`（三个页签的列容器都是 `gap: 2px`）。 */
 export const COLUMN_GAP = 2;
 
 /** 标题行高（12px 字 + `lineHeight: 17px`）。 */
@@ -125,7 +126,7 @@ export const HELP_SECTION_GAP = 6;
 export const HELP_MARGIN_BOTTOM = 8;
 
 /**
- * **两页要对齐的那一档**：用户点名的「5 步」。
+ * **实时速度与每步平均要对齐的那一档**：用户点名的「5 步」。
  *
  * 10 / 20 步会自然更高 —— 那是行数决定的，不是错位。
  */
@@ -191,7 +192,7 @@ export function stepsBodyHeight(rows: number): number {
 }
 
 /**
- * **面板内容区的高度**：两页取较高那个。
+ * **面板内容区的高度**：实时速度与每步平均取较高那个；明细页复用时间页基准。
  *
  * 删掉那句提示之后，5 步的步数页比时间页矮 22px。要「方框大小一致」，只有两条路：
  *
@@ -207,7 +208,7 @@ export function stepsBodyHeight(rows: number): number {
  *
  * 只撑高外框是不够的：矮的那页会把档位按钮留在 22px 之上，切页签时按钮行上下跳。
  * 所以渲染层（`tps-chart.ts`）把面板本身做成 flex 列、页内容 `flex: 1`、
- * 按钮行 `marginTop: auto` —— 两页的按钮压在**同一条底线**上。
+ * 按钮行 `marginTop: auto` —— 实时速度与每步平均两页的按钮压在**同一条底线**上。
  *
  * 注意：那是 CSS 行为，本模块只负责「外框多高」，单测断言的是数字，不是布局。
  * @param rows - 步数页的行数；传 `undefined` 表示按时间页算。
@@ -221,7 +222,7 @@ export function panelContentHeight(rows?: number): number {
 /**
  * 弹层的最小高度（含内边距与头部）。
  *
- * **以两页里较高的那一页为准**（删掉那句提示之后是**时间页**更高）：挂在面板的
+ * **以实时速度与 5 步页里较高的那一页为准**（删掉那句提示之后是**时间页**更高）：挂在面板的
  * `minHeight` 上，矮的那一页就自动被撑到同一高度 —— 用户要的「方框大小一致」
  * 就是这样落实的，而不是靠两页各自的算式恰好相等（那种巧合一改行高就散）。
  * 顺带兜住空态：连一行都没有时面板也不会缩。
@@ -244,7 +245,8 @@ export function panelMinHeight(): number {
  * `line-height: 16px`，条目之间 `gap: 1px`，每节之间 `gap: 6px`，
  * 整块末尾 `marginBottom: 8px`；每节有一个标题行（同样 16px）。
  *
- * 对照值（`help.ts` 现在是 2 节 12 条）：2 × 16 + 12 × 16 + 6 + 12 + 8 = **250px**。
+ * 当前 `help.ts` 是 3 节 18 条：3 × 16 + 18 × 16 + 2 × 6 + 18 + 8 = **374px**。
+ * 文案变化时以 `HELP_SIZE` 与 `helpBodyHeight()` 的实际结果为准，不写死这个对照值。
  * @param sections - 节数。
  * @param lines - 条目总数。
  * @returns 像素。
@@ -277,8 +279,8 @@ export function helpBodyHeight(sections: number, lines: number): number {
  *
  * ## `helpOpen` 也必须算进去（2026-11-14 第二轮）
  *
- * `?` 展开后 `renderHelp()` 会在内容流里插进两节共 12 条说明 —— 面板一下长高
- * 约 250px。面板是**靠 `translateY(-100%)` 向上长**的，所以变高等于**顶边往上
+ * `?` 展开后 `renderHelp()` 会在内容流里插进三节共 18 条说明 —— 面板一下长高
+ * 约 374px。面板是**靠 `translateY(-100%)` 向上长**的，所以变高等于**顶边往上
  * 跑**：不把这段算进定位，展开说明就会把表头和 `x` 顶出视口。
  * @param tab - 当前页签。
  * @param steps - 步数页当前档位（时间页忽略）。

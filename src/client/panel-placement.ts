@@ -49,10 +49,10 @@ export interface PanelPlacement {
 /**
  * 计算弹层位置。
  * @param anchor - 胶囊的屏幕矩形（打开那一刻取得）。
- * @param tab - 当前页签（两页高度不同）。
+ * @param tab - 当前页签（三个页签高度不同）。
  * @param steps - 步数页当前档位。
  * @param viewport - 视口尺寸（测试可注入；缺省读 `window`）。
- * @param helpOpen - `?` 是否展开（展开后面板高 250px，必须参与定位）。
+ * @param helpOpen - `?` 是否展开（展开后增加的高度由 `HELP_SIZE` 推导，必须参与定位）。
  * @returns 视口坐标下的位置。
  */
 export function panelPlacement(
@@ -66,7 +66,7 @@ export function panelPlacement(
   const innerHeight = viewport?.height ?? (typeof window === "undefined" ? 0 : window.innerHeight);
   /*
    * **高度必须带上 `helpOpen`**：面板靠 `translateY(-100%)` 向上长，
-   * `?` 一展开就多 250px，不算进来会把表头和 `x` 顶出视口。
+   * `?` 一展开就会增加一整块说明的高度，不算进来会把表头和 `x` 顶出视口。
    */
   const panelHeight = panelOuterHeight(tab, steps, helpOpen);
   /*
@@ -74,7 +74,7 @@ export function panelPlacement(
    *
    * 这一步很关键：`top` 在「放在上方」时写的是**底边**（靠 `translateY(-100%)`
    * 往上长），底边减去的必须是**压矮后**的高度。用未压矮的 `panelHeight` 算，
-   * 矮窗口里（20 步 + `?` = 764px、窗口 500px）盒子会被推到视口底部以外 ——
+   * 矮窗口里（20 步档或 `?` 展开、窗口 500px）盒子会被推到视口底部以外 ——
    * 明明夹好了上边距，却被自己的 `translateY` 又推回去。
    */
   const available = Math.max(0, innerHeight - VIEWPORT_MARGIN - VIEWPORT_MARGIN);
@@ -125,9 +125,9 @@ export function panelPlacement(
  *
  * ## 为什么需要（2026-11-14 第二轮排查发现）
  *
- * 定位保证了「表头可见」，但 20 步档 + `?` 展开有 764px 高 —— 窗口矮于这个数
- * （768px 的笔记本屏减去标题栏就差不多了）时，底部那排档位按钮与表格末行会被
- * 推出视口。面板本身不滚的话，那部分**永远够不到**。
+ * 定位保证了「表头可见」，但 20 步档或 `?` 展开时面板可能明显高于窗口 ——
+ * 窗口矮于内容高度时，底部那排档位按钮与表格末行会被推出视口。
+ * 面板本身不滚的话，那部分**永远够不到**。
  *
  * 所以渲染时挂一个 `maxHeight`：装得下时它大于内容高度、不生效；装不下时才
  * 截断并让弹层自己滚。
@@ -159,7 +159,7 @@ export function panelMaxHeight(topEdge: number, innerHeight: number): number {
  * → 内部滚动才开始工作。
  *
  * 平时的窗口（可用高度 ≥ 236）这个函数返回的就是 `panelMinHeight()`，
- * 「两页一样高」那条要求不受影响。
+ * 「三个页签一样高」那条要求不受影响。
  * @param topEdge - 竖带顶边（`PanelPlacement.topEdge`）。
  * @param innerHeight - 视口高。
  * @returns 像素。

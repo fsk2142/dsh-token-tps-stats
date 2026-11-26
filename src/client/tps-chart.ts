@@ -32,7 +32,7 @@
  *
  * ## 为什么空闲时也不留常驻定时器
  *
- * 实时页打开时每 500ms 推进时间轴。每步页随数据和滚动刷新。
+ * 实时页与本轮细则页打开时每 500ms 重画；每步页随数据和滚动刷新。
  *
  * @module dsh-token-tps-stats/src/client/tps-chart
  */
@@ -55,7 +55,7 @@ import {
 } from "./chart-store";
 import type { DshEvent } from "./dom";
 import { PANEL_ATTRIBUTE, PILL_ATTRIBUTE } from "./dom-attributes";
-import { formatRatio, formatRate, formatRateWithUnit, formatTokens } from "./format";
+import { formatDuration, formatRatio, formatRate, formatRateWithUnit, formatTokens } from "./format";
 import { HELP_LABEL, HELP_SECTIONS } from "./help";
 import {
   BUTTON_MARGIN_TOP,
@@ -72,6 +72,7 @@ import type { SessionStream } from "./session-store";
 import { TPS_STEP_RANGES, type StepRow, type TpsStepRange } from "./step-history";
 import { HAIRLINE, INK, INK_STRONG, SURFACE, TYPO } from "./styles";
 import { TPS_CHART_RANGES, type TpsChartRange, type TpsSeriesSummary } from "./tps-history";
+import { turnDetailsOf, type TurnDetails } from "./turn-details";
 
 /** 绘图区宽度（SVG 单位，等于内容宽减去左边距）。 */
 const PLOT_WIDTH = PANEL_WIDTH - 2 * PANEL_PADDING_X - 32;
@@ -91,10 +92,10 @@ const SVG_WIDTH = PANEL_WIDTH - 2 * PANEL_PADDING_X;
 /**
  * 整个 SVG 的 viewBox 高（含底部横轴标签）。
  *
- * **这个数由 {@link CHART_SVG_HEIGHT} 决定**，不是随便挑的：它让时间页的高度
- * 恰好等于「5 步」时的步数页 —— 用户 2026-11-13 要求
+ * **这个数由 {@link CHART_SVG_HEIGHT} 决定**，不是随便挑的：它让时间页的内容区
+ * 成为三个页签的共同高度基准 —— 用户 2026-11-13 要求
  * 「实时速度和每步平均的 5 步时候的方框长宽高大小一致」。
- * 推导在两页共用的 `panel-metrics.ts` 里，`panel-metrics.test.ts` 断言这条等式。
+ * 推导在三个页签共用的 `panel-metrics.ts` 里，`panel-metrics.test.ts` 断言这条等式。
  */
 const SVG_HEIGHT = CHART_SVG_HEIGHT;
 
@@ -252,7 +253,7 @@ export function TpsChart(): unknown {
   useEffect(() => {
     if (!state.open) return;
     const refresh = (): void => setTick((tick) => tick + 1);
-    if (state.tab === "time") {
+    if (state.tab === "time" || state.tab === "details") {
       const timer = setInterval(refresh, OPEN_TICK_MS);
       return () => clearInterval(timer);
     }
@@ -334,8 +335,8 @@ export function TpsChart(): unknown {
   /*
    * **`?` 展开时把面板滚到顶**（2026-11-14 补）。
    *
-   * 说明块插在表头之后、内容之前。面板已经滚过一段时插进 250px，浏览器会保持
-   * `scrollTop` 不变 —— 用户看到的是「图表往下跳 250px，说明还在视口上方」，
+   * 说明块插在表头之后、内容之前。面板已经滚过一段时插进说明，浏览器会保持
+   * `scrollTop` 不变 —— 用户看到的是「内容往下跳，说明还在视口上方」，
    * 点 `?` 等于没反应。所以展开/收起后把滚动位置归零。
    *
    * 只在**已经滚动过**时才动（`scrollTop > 0`）：装得下时面板根本没滚动条，
@@ -356,14 +357,14 @@ export function TpsChart(): unknown {
 }
 
 /**
- * 渲染弹层内容（**左上角两个标签页**，2026-11-13 用户第二版要求）。
+ * 渲染弹层内容（**左上角三个标签页**，2026-11-13 用户第二版要求）。
  *
  * > 现在你设计的是并列显示，我需要的是可以在左上角进行选择，然后整个页面都进行切换。
  *
  * 上一版把「实时速度」和「每步平均」并排画成两块，用户不要那个形状：
  * 左上角选一个，整张图跟着换。这样每张图能独占整个宽度，曲线也看得清。
  *
- * 两个页签各自记得自己的档位（60/180/300 秒、5/10/20 步），切换页签不会重置。
+ * 实时速度与每步平均各自记得自己的档位（60/180/300 秒、5/10/20 步），切换页签不会重置。
  *
  * 口径说明（2026-11-13 用户第三版要求）：
  *
@@ -392,12 +393,23 @@ function renderPanel(
    */
   const stream = state.stream;
   const timeView = state.tab === "time" ? timeSeriesOf(stream, now, state.seconds) : undefined;
+  const details = state.tab === "details"
+    ? turnDetailsOf({
+        nodes: stream?.nodes ?? [],
+        running: stream?.runningTurn !== undefined && stream.runningStep !== undefined
+          ? { turn: stream.runningTurn, step: stream.runningStep }
+          : undefined,
+        runningTokens: stream?.runningTokens ?? 0,
+        liveSpeed: stream?.meter.reading(now) ?? 0,
+        now,
+      })
+    : undefined;
   const placement = panelPlacement(anchor, state.tab, state.steps, undefined, help.helpOpen);
   const seconds = state.seconds;
   const steps = state.steps;
   /*
    * 说明展开时面板会变高，但可能已经贴着视口顶部（`translateY(-100%)` 往上长）。
-   * 展开面板因此**画在内容流里**（把两页往下推），而不是浮在上面盖住图表 ——
+   * 展开面板因此**画在内容流里**（把当前页往下推），而不是浮在上面盖住内容 ——
    * 盖住会让「读说明时想看表格」变得不可能，而这是用户自己点开要看的。
    */
 
@@ -409,7 +421,9 @@ function renderPanel(
       "aria-label":
         state.tab === "time"
           ? `实时输出速度（TPS），最近 ${rangeLabel(seconds)}`
-          : `每步输出统计，最近 ${stepLabel(steps)}`,
+          : state.tab === "steps"
+            ? `每步输出统计，最近 ${stepLabel(steps)}`
+            : "当前轮次输出统计",
       style: {
         position: "fixed",
         left: `${placement.left}px`,
@@ -417,7 +431,7 @@ function renderPanel(
         transform: placement.below ? "none" : "translateY(-100%)",
         width: `${PANEL_WIDTH}px`,
         /*
-         * **两页一样高**（2026-11-13 用户要求）。
+         * **三个页签一样高**（2026-11-13 用户要求）。
          *
          * 时间页的高度由折线图 SVG 定死；步数页由行数定。折线图的高度已经取成
          * 「5 步」那一档的高度（推导见 `panel-metrics.ts`），所以切页签不会跳。
@@ -430,12 +444,12 @@ function renderPanel(
         /*
          * **矮窗口里必须能滚**（2026-11-14 补）。
          *
-         * 20 步档 + `?` 展开后弹层有 764px 高。窗口只要矮于这个数（笔记本 768px
+         * 20 步档或 `?` 展开时弹层会明显变高。窗口只要矮于内容高度（笔记本 768px
          * 屏减去标题栏就差不多），底部那排档位按钮与表格末行就会被推出视口；
          * 定位那一步保证的是**表头可见**（否则连 `x` 都点不到），剩下能做的只有
          * 让弹层自己滚 —— 否则那部分**永远够不到**。
          *
-         * 用 `maxHeight` 而不是 `height`：装得下时高度仍然由内容决定（两页对齐的
+         * 用 `maxHeight` 而不是 `height`：装得下时高度仍然由内容决定（三页对齐的
          * 规矩不变），只有装不下时才开始滚动。横向 `overflowX: hidden` 防止
          * 出现横向滚动条。
          */
@@ -444,7 +458,7 @@ function renderPanel(
         overflowX: "hidden",
         padding: `${PANEL_PADDING_TOP}px ${PANEL_PADDING_X}px ${PANEL_PADDING_BOTTOM}px`,
         /*
-         * **两页的档位按钮必须落在同一条底线上**（2026-11-13 用户要求）。
+         * **实时速度与每步平均的档位按钮必须落在同一条底线上**（2026-11-13 用户要求）。
          *
          * > 一个底部对齐，一个上去了，建议你两边对齐一下，不然切换的时候整个页面
          * > 都是跳了一下
@@ -454,7 +468,8 @@ function renderPanel(
          * 时按钮行就上下跳一下。
          *
          * 所以面板本身也改成一列 flex，页内容 `flex: 1` 吃掉多出来的高度，
-         * 档位按钮那排 `marginTop: auto` 贴到底 —— 两页按钮于是都压在同一个 `y` 上。
+         * 档位按钮那排 `marginTop: auto` 贴到底 —— 实时速度与每步平均两页按钮
+         * 于是都压在同一个 `y` 上。
          */
         display: "flex",
         flexDirection: "column",
@@ -502,10 +517,68 @@ function renderPanel(
             buttons: renderRangeButtons(seconds),
           }),
         )
+      : state.tab === "steps"
+        ? createElement(
+            "div",
+            { key: "body-steps" },
+            renderStepTable(stream?.steps.rows(steps) ?? [], steps),
+          )
+        : createElement("div", { key: "body-details" }, renderTurnDetails(details)),
+  );
+}
+
+/**
+ * 渲染「本轮细则」：四行核心指标 + 输出比例条。
+ *
+ * 纯函数（不碰 Hook），测试可以直接检查元素树。缺失字段统一显示 `—`；
+ * 运行中标题追加「估算」，避免把字符估算伪装成真实账单。
+ * @param details - 当前轮次聚合结果；`undefined` 时显示空态。
+ * @returns 元素。
+ */
+export function renderTurnDetails(details: TurnDetails | undefined): ReactElement {
+  if (details === undefined) {
+    return createElement(
+      "div",
+      { style: { display: "flex", alignItems: "center", justifyContent: "center", flex: "1", minHeight: "120px", color: INK, fontSize: "11px" } },
+      "当前轮次还没有可汇总的数据",
+    );
+  }
+  const speedText = (value: number | undefined): string => value === undefined ? "—" : formatRateWithUnit(value);
+  const percent = details.reasoningRatio === undefined ? undefined : Math.round(Math.min(1, Math.max(0, details.reasoningRatio)) * 100);
+  const title = `第 ${details.turn} 轮 · ${details.steps} 步 · 总计 ${formatDuration(details.totalMs)}${details.running ? " · 估算" : ""}`;
+  const rows: readonly (readonly [string, string])[] = [
+    ["生成速度", `流式 ${speedText(details.streamSpeed)} · 端到端 ${speedText(details.endToEndSpeed)}`],
+    ["响应耗时", `TTFT ${formatDuration(details.ttftMs)} · 生成 ${formatDuration(details.generationMs)} · 总计 ${formatDuration(details.totalMs)}`],
+    ["本轮输出", `${details.outputTokens === undefined ? "—" : `${formatTokens(details.outputTokens)} tok`} · 缓存率 ${formatRatio(details.cacheHitRatio)}`],
+    ["输出比例", percent === undefined ? "思维链 — · 正文/工具 —" : `思维链 ${percent}% · 正文/工具 ${100 - percent}%`],
+  ];
+  return createElement(
+    "div",
+    { style: { display: "flex", flexDirection: "column", gap: "8px", width: "100%", flex: "1" } },
+    createElement(
+      "span",
+      { style: { fontSize: "12px", lineHeight: "17px", color: INK_STRONG, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } },
+      title,
+    ),
+    ...rows.map(([label, value], index) =>
+      createElement(
+        "div",
+        { key: `detail-${index}`, style: { display: "flex", alignItems: "center", gap: "8px", minHeight: "20px" } },
+        createElement("span", { style: { width: "64px", flex: "none", fontSize: "11px", lineHeight: "16px", color: INK } }, label),
+        createElement(
+          "span",
+          { style: { flex: "1", minWidth: "0", fontSize: "11px", lineHeight: "16px", color: INK_STRONG, textAlign: "end", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } },
+          value,
+        ),
+      ),
+    ),
+    percent === undefined
+      ? null
       : createElement(
           "div",
-          { key: "body-steps" },
-          renderStepTable(stream?.steps.rows(steps) ?? [], steps),
+          { style: { display: "flex", width: "100%", height: "6px", borderRadius: "3px", overflow: "hidden", background: HAIRLINE } },
+          createElement("div", { style: { width: `${percent}%`, background: INK_STRONG } }),
+          createElement("div", { style: { width: `${100 - percent}%`, background: INK } }),
         ),
   );
 }
@@ -736,7 +809,7 @@ function iconButtonStyle(active: boolean): Record<string, string | number> {
 }
 
 /**
- * 头部：**左上角两个页签** + 右侧 `?` 与关闭按钮。
+ * 头部：**左上角三个页签** + 右侧 `?` 与关闭按钮。
  *
  * 页签沿用宿主分段控件的观感：未选中是透明底 + 发丝边框，选中是略深一档的描边
  * （与下方档位按钮同一套 `rangeButtonStyle`），所以「选中的是哪个」一眼看得出。
@@ -784,6 +857,7 @@ function renderHeader(tab: ChartTab, help: { helpOpen: boolean; toggleHelp: () =
       { style: { display: "flex", alignItems: "center", gap: "6px", flex: "1", minWidth: "0" } },
       renderTabButton("time", "实时速度", tab),
       renderTabButton("steps", "每步平均", tab),
+      renderTabButton("details", "本轮细则", tab),
     ),
     createElement(
       "div",
@@ -814,7 +888,8 @@ function renderHeader(tab: ChartTab, help: { helpOpen: boolean; toggleHelp: () =
         {
           type: "button",
           "aria-label": "关闭折线图",
-          onClick: () => closeChart(),          style: iconButtonStyle(false),
+          onClick: () => closeChart(),
+          style: iconButtonStyle(false),
         },
         "×",
       ),
@@ -1123,8 +1198,8 @@ function renderStepButtons(steps: TpsStepRange): ReactElement {
  * > 建议你两边对齐一下，不然切换的时候整个页面都是跳了一下，不好看
  *
  * 光靠面板 `minHeight` 只会让外框一样高：矮的那页（步数页 168px < 时间页 190px）
- * 会把按钮留在上方，切页签时按钮行上下跳。交给 `auto` 之后，两页的按钮都在
- * 面板底边的同一个 `y` 上，切页签时按钮不动 —— 动的只有上方那块图表/表格。
+ * 会把按钮留在上方，切页签时按钮行上下跳。交给 `auto` 之后，实时速度与每步平均
+ * 两页的按钮都在面板底边的同一个 `y` 上，切页签时按钮不动 —— 动的只有上方内容。
  * 原来那个 4px 视觉间距由面板下内边距（8px）覆盖，实际留白反而更稳。
  * @param buttons - 按钮节点。
  * @returns 元素。
