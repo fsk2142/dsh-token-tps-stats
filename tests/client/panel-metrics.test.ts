@@ -6,10 +6,8 @@ import {
   BUTTON_ROW_WIDTH,
   BUTTON_WIDTH,
   COLUMN_GAP,
-  detailsBodyHeight,
   panelContentHeight,
   panelMinHeight,
-  panelOuterHeight,
   PANEL_REFERENCE_STEPS,
   STEP_HEADER_HEIGHT,
   STEP_ROW_HEIGHT,
@@ -18,18 +16,6 @@ import {
   timeBodyHeight,
   TITLE_HEIGHT,
 } from "../../src/client/panel-metrics";
-
-describe("版面：第三个页签「本轮细则」也保持同高", () => {
-  it("明细页内容区固定 190px，与时间页一致", () => {
-    expect(detailsBodyHeight()).toBe(190);
-    expect(detailsBodyHeight()).toBe(timeBodyHeight());
-  });
-
-  it("明细页外高与默认时间页/5 步页一致", () => {
-    expect(panelOuterHeight("details", 5)).toBe(panelMinHeight());
-    expect(panelOuterHeight("details", 5)).toBe(panelOuterHeight("time", 5));
-  });
-});
 
 describe("版面：两个页签一样高（用户 2026-11-13 的要求）", () => {
   it("**两页取较高那个，所以一样高**（这就是「方框长宽高一致」）", () => {

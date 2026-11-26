@@ -119,28 +119,6 @@ describe("弹层开关", () => {
     expect(getChartState().tab).toBe("steps");
   });
 
-  it("**第三个页签「本轮细则」可切换、不关窗，同页签不通知**", () => {
-    toggleChart(anchor);
-    let calls = 0;
-    subscribeChart(() => {
-      calls += 1;
-    });
-    setChartTab("details");
-    expect(getChartState().open).toBe(true);
-    expect(getChartState().tab).toBe("details");
-    expect(calls).toBe(1);
-    setChartTab("details");
-    expect(calls).toBe(1);
-  });
-
-  it("**关掉再开仍记住「本轮细则」**", () => {
-    toggleChart(anchor);
-    setChartTab("details");
-    closeChart();
-    toggleChart(anchor, stream);
-    expect(getChartState().tab).toBe("details");
-  });
-
   it("切到同一个页签不通知；切一次只通知一次", () => {
     let calls = 0;
     subscribeChart(() => {

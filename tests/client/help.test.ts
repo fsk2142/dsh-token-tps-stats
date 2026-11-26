@@ -19,14 +19,8 @@ describe("口径说明：内容", () => {
     }
   });
 
-  it("三个页签都有对应小节（`?` 不偏袒某一页）", () => {
-    expect(HELP_SECTIONS.map((section) => section.title)).toEqual(["实时速度", "每步平均", "本轮细则"]);
-  });
-
-  it("本轮细则写清了流式/端到端、TTFT 与估算口径", () => {
-    for (const word of ["流式", "端到端", "TTFT", "估算", "—"]) {
-      expect(ALL_TEXT, `说明里缺少「${word}」`).toContain(word);
-    }
+  it("两个页签都有对应小节（`?` 不偏袒某一页）", () => {
+    expect(HELP_SECTIONS.map((section) => section.title)).toEqual(["实时速度", "每步平均"]);
   });
 
   it("说明里写清了命中率的分母（这正是用户之前搞错的地方）", () => {

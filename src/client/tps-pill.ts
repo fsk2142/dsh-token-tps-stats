@@ -6,7 +6,7 @@ import { closeChart, getChartState, setPillElement, subscribeChart, toggleChart,
 import { formatRate } from "./format";
 import { pillAriaOf, pillLabelOf } from "./label";
 import type { SessionEventSourceFor } from "./session-events";
-import { createSessionStream, observeSessionSpeed, pushNodes, pushSnapshot, pushTurnTimings, resetSnapshotBaseline } from "./session-store";
+import { createSessionStream, observeSessionSpeed, pushNodes, pushSnapshot, resetSnapshotBaseline } from "./session-store";
 import { TYPO } from "./styles";
 import { PILL_ATTRIBUTE } from "./dom-attributes";
 
@@ -136,13 +136,12 @@ function SessionPill(props: TpsPillProps & { sessionKey?: string }): unknown {
   const [value, setValue] = useState(0);
   const [expanded, setExpanded] = useState(() => getChartState().open);
   const label = pillLabelOf(value, formatRate);
-  type ChatSnapshot = { legacy?: { partial?: unknown; nodes?: unknown; turnTimings?: unknown } };
+  type ChatSnapshot = { legacy?: { partial?: unknown; nodes?: unknown } };
   const useChat = typeof props.useChat === "function"
     ? props.useChat as (selector: (snapshot: ChatSnapshot) => unknown) => unknown
     : undefined;
   const partial = useChat?.((snapshot) => snapshot?.legacy?.partial);
   const nodes = useChat?.((snapshot) => snapshot?.legacy?.nodes);
-  const turnTimings = useChat?.((snapshot) => snapshot?.legacy?.turnTimings);
   /*
    * **把事件源解析函数钉在 ref 里**（2026-11-13）。
    *
@@ -180,7 +179,6 @@ function SessionPill(props: TpsPillProps & { sessionKey?: string }): unknown {
   }, [entry, partial]);
 
   useEffect(() => pushNodes(entry, nodes), [entry, nodes]);
-  useEffect(() => pushTurnTimings(entry, turnTimings), [entry, turnTimings]);
 
   /** 订阅弹层的开关（只为了给按钮刷 `aria-expanded`）。 */
   useEffect(() => subscribeChart(() => setExpanded(getChartState().open)), []);

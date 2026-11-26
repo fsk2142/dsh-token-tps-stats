@@ -77,16 +77,6 @@ export function formatTokens(value: number | undefined): string {
   return String(Math.round(rounded)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
-/**
- * 把毫秒格式化成秒（固定两位小数）。
- * @param ms - 毫秒；缺失、非法或负数返回 `—`。
- * @returns 例如 `"4.96s"` / `"6.60s"`。
- */
-export function formatDuration(ms: number | undefined): string {
-  if (ms === undefined || !Number.isFinite(ms) || ms < 0) return "—";
-  return `${(ms / 1_000).toFixed(2)}s`;
-}
-
 
 /**
  * 把**已经算好的比例**（0~1）格式化成百分比。
